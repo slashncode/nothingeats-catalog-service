@@ -16,6 +16,9 @@ Public under `/api/catalog/v1` (routed by the gateway at `nothingeats.localhost`
 export DATABASE__URL=jdbc:postgresql://localhost:15432/catalog DATABASE__USER=catalog DATABASE__PASSWORD=...
 ./gradlew :app:run --args=migrate
 ./gradlew :app:run
+
+# in the k3d cluster, from the hub repo (Tilt, live rebuilds; stop with just dev-stop catalog-service)
+just dev catalog-service
 ```
 
 Modules, conventions and the delivery pipeline are described in the template's README.
