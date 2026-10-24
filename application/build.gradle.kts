@@ -10,4 +10,5 @@ dependencies {
     api(libs.nothingeats.platform.core)
 
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.nothingeats.platform.testing)
 }
