@@ -1,6 +1,6 @@
 # nothingeats-catalog-service
 
-Catalog bounded context of [NothingEats](https://github.com/slashncode/nothingeats): restaurants, dishes and menus in German and English. Flash deals and fake stock follow in a later phase.
+Catalog bounded context of [NothingEats](https://github.com/slashncode/nothingeats): restaurants, dishes and menus in German and English, and flash deals. Deals have no stock: a restaurant always has food, so the only urgency is the clock.
 
 ## API (`/api/catalog/v1`)
 
@@ -9,11 +9,13 @@ Catalog bounded context of [NothingEats](https://github.com/slashncode/nothingea
 | `GET` | `/restaurants?cursor=&limit=&cuisine=` | – | Restaurants ordered by slug, cursor-paginated (`limit` 1–50, default 20), optionally one cuisine |
 | `GET` | `/restaurants/{slug}` | – | The restaurant with its menu, dishes grouped by section |
 | `GET` | `/dishes/{id}` | – | One dish with its restaurant |
+| `GET` | `/deals` | – | Running flash deals with dish and restaurant, soonest end first |
 | `PUT` | `/admin/restaurants/{slug}` | role `admin` | Create or update a restaurant (both languages in one body) |
 | `PUT` | `/admin/restaurants/{slug}/dishes/{dish}` | role `admin` | Create or update a dish |
 
 - **Language**: `?lang=de|en` wins over `Accept-Language`; anything else is German. Responses carry `Content-Language` and `Vary: Accept-Language`.
 - **Open now**: computed per request in Berlin time; opening hours may run past midnight (`18:00`–`02:00`).
+- **Flash deals**: a loop on every pod (one at a time, via a Postgres advisory lock) keeps three deals running at different restaurants, 30–60 minutes each, 20–40 % off one dish of at least 5 €, only where the kitchen stays open for the whole deal. Dishes in menus and `/dishes/{id}` carry `deal` (`priceCents`, `percentOff`, `endsAt`) while one runs.
 - **Money** is always in euro cents. Allergens are the 14 EU declarable allergens, dietary tags are `vegan`, `vegetarian`, `gluten_free`, `lactose_free`, `halal`.
 - Errors are RFC 9457 problems with stable codes: `RESTAURANT_NOT_FOUND`, `DISH_NOT_FOUND`, `CURSOR_INVALID`, `CATALOG_INVALID` (with the offending field).
 

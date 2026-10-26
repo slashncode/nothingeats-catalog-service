@@ -1,8 +1,10 @@
 package io.github.slashncode.nothingeats.catalog.application
 
+import io.github.slashncode.nothingeats.catalog.domain.Deal
 import io.github.slashncode.nothingeats.catalog.domain.Dish
 import io.github.slashncode.nothingeats.catalog.domain.Restaurant
 import io.github.slashncode.nothingeats.catalog.domain.Slug
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.uuid.Uuid
@@ -27,6 +29,8 @@ class InMemoryRestaurants : Restaurants {
         .sortedBy { it.slug.value }
         .filter { after == null || it.slug.value > after.value }
         .take(limit)
+
+    override suspend fun all() = all.values.sortedBy { it.slug.value }
 }
 
 class InMemoryDishes : Dishes {
@@ -59,6 +63,31 @@ class RecordingCatalogEvents : CatalogEvents {
     ) {
         events += "dish:${restaurant.slug}/${dish.slug}"
     }
+
+    override suspend fun dealPublished(deal: Deal) {
+        events += "deal:${deal.dishId}"
+    }
+}
+
+class InMemoryDeals : Deals {
+    val all = CopyOnWriteArrayList<Deal>()
+
+    /** Set to false to act as if another pod were planning. */
+    var lockAvailable = true
+
+    override suspend fun insert(deal: Deal) {
+        all += deal
+    }
+
+    override suspend fun activeAt(time: Instant) = all.filter { it.isActiveAt(time) }.sortedBy { it.endsAt }
+
+    override suspend fun deleteEndedBefore(time: Instant): Int {
+        val ended = all.filter { it.endsAt.isBefore(time) }
+        all.removeAll(ended.toSet())
+        return ended.size
+    }
+
+    override suspend fun tryLockPlanning() = lockAvailable
 }
 
 class DirectTransactions : Transactions {

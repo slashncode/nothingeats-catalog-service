@@ -1,10 +1,12 @@
 package io.github.slashncode.nothingeats.catalog.adapters.http
 
 import io.github.slashncode.nothingeats.catalog.application.BrowseCatalog
+import io.github.slashncode.nothingeats.catalog.application.BrowseDeals
 import io.github.slashncode.nothingeats.catalog.application.DishInput
 import io.github.slashncode.nothingeats.catalog.application.ManageCatalog
 import io.github.slashncode.nothingeats.catalog.application.RestaurantInput
 import io.github.slashncode.nothingeats.catalog.application.Translated
+import io.github.slashncode.nothingeats.catalog.domain.Deal
 import io.github.slashncode.nothingeats.catalog.domain.Dish
 import io.github.slashncode.nothingeats.catalog.domain.Language
 import io.github.slashncode.nothingeats.catalog.domain.Restaurant
@@ -54,6 +56,14 @@ data class RestaurantPageResponse(
     val nextCursor: String?,
 )
 
+/** A running flash deal: [priceCents] instead of the dish's regular price until [endsAt]. */
+@Serializable
+data class DealResponse(
+    val priceCents: Long,
+    val percentOff: Int,
+    val endsAt: String,
+)
+
 @Serializable
 data class DishResponse(
     val id: String,
@@ -67,6 +77,7 @@ data class DishResponse(
     val calories: Int,
     val moods: List<String>,
     val available: Boolean,
+    val deal: DealResponse? = null,
 )
 
 @Serializable
@@ -85,6 +96,25 @@ data class MenuResponse(
 data class DishDetailResponse(
     val dish: DishResponse,
     val restaurant: RestaurantResponse,
+)
+
+@Serializable
+data class DealRestaurantResponse(
+    val slug: String,
+    val name: String,
+    val cuisine: String,
+)
+
+@Serializable
+data class DealOfferResponse(
+    val dish: DishResponse,
+    val restaurant: DealRestaurantResponse,
+    val startsAt: String,
+)
+
+@Serializable
+data class DealsResponse(
+    val items: List<DealOfferResponse>,
 )
 
 @Serializable
@@ -131,6 +161,7 @@ private fun TranslatedRequest.toInput() = Translated(de, en)
  */
 class CatalogRoutes(
     private val browse: BrowseCatalog,
+    private val deals: BrowseDeals,
     private val manage: ManageCatalog,
     private val clock: Clock = Clock.system(ZoneId.of("Europe/Berlin")),
 ) : HttpRoutes {
@@ -150,16 +181,35 @@ class CatalogRoutes(
                 get("/restaurants/{slug}") {
                     val menu = browse.menu(call.parameters["slug"].orEmpty())
                     val language = call.language()
+                    val running = deals.byDish()
                     val sections =
                         menu.dishes
                             .groupBy { it.section.of(language) }
-                            .map { (name, dishes) -> MenuSectionResponse(name, dishes.map { it.toResponse(language) }) }
+                            .map { (name, dishes) -> MenuSectionResponse(name, dishes.map { it.toResponse(language, running[it.id]) }) }
                     call.respond(MenuResponse(menu.restaurant.toResponse(language), sections))
                 }
                 get("/dishes/{id}") {
                     val found = browse.dish(call.parameters["id"].orEmpty())
                     val language = call.language()
-                    call.respond(DishDetailResponse(found.dish.toResponse(language), found.restaurant.toResponse(language)))
+                    val deal = deals.byDish()[found.dish.id]
+                    call.respond(DishDetailResponse(found.dish.toResponse(language, deal), found.restaurant.toResponse(language)))
+                }
+                get("/deals") {
+                    val language = call.language()
+                    val offers =
+                        deals.active().map { offer ->
+                            DealOfferResponse(
+                                dish = offer.dish.toResponse(language, offer.deal),
+                                restaurant =
+                                    DealRestaurantResponse(
+                                        offer.restaurant.slug.value,
+                                        offer.restaurant.name,
+                                        offer.restaurant.cuisine.value,
+                                    ),
+                                startsAt = offer.deal.startsAt.toString(),
+                            )
+                        }
+                    call.respond(DealsResponse(offers))
                 }
             }
             requireRole("admin") {
@@ -233,20 +283,23 @@ class CatalogRoutes(
             location = Location(location.latitude, location.longitude),
         )
 
-    private fun Dish.toResponse(language: Language) =
-        DishResponse(
-            id = id.toString(),
-            slug = slug.value,
-            name = name.of(language),
-            description = description.of(language),
-            priceCents = price.cents,
-            dietary = dietary.map { it.name.lowercase() }.sorted(),
-            allergens = allergens.map { it.name.lowercase() }.sorted(),
-            spiceLevel = spiceLevel,
-            calories = calories,
-            moods = moods.sorted(),
-            available = available,
-        )
+    private fun Dish.toResponse(
+        language: Language,
+        deal: Deal? = null,
+    ) = DishResponse(
+        id = id.toString(),
+        slug = slug.value,
+        name = name.of(language),
+        description = description.of(language),
+        priceCents = price.cents,
+        dietary = dietary.map { it.name.lowercase() }.sorted(),
+        allergens = allergens.map { it.name.lowercase() }.sorted(),
+        spiceLevel = spiceLevel,
+        calories = calories,
+        moods = moods.sorted(),
+        available = available,
+        deal = deal?.let { DealResponse(it.price.cents, it.percentOff, it.endsAt.toString()) },
+    )
 
     private companion object {
         const val DEFAULT_PAGE = 20

@@ -1,7 +1,9 @@
 package io.github.slashncode.nothingeats.catalog.adapters.http
 
 import io.github.slashncode.nothingeats.catalog.application.BrowseCatalog
+import io.github.slashncode.nothingeats.catalog.application.BrowseDeals
 import io.github.slashncode.nothingeats.catalog.application.DirectTransactions
+import io.github.slashncode.nothingeats.catalog.application.InMemoryDeals
 import io.github.slashncode.nothingeats.catalog.application.InMemoryDishes
 import io.github.slashncode.nothingeats.catalog.application.InMemoryRestaurants
 import io.github.slashncode.nothingeats.catalog.application.ManageCatalog
@@ -9,6 +11,7 @@ import io.github.slashncode.nothingeats.catalog.application.RecordingCatalogEven
 import io.github.slashncode.nothingeats.catalog.application.Translated
 import io.github.slashncode.nothingeats.catalog.application.dishInput
 import io.github.slashncode.nothingeats.catalog.application.restaurantInput
+import io.github.slashncode.nothingeats.catalog.domain.Deal
 import io.github.slashncode.nothingeats.platform.core.lifecycle.HealthChecks
 import io.github.slashncode.nothingeats.platform.core.lifecycle.Readiness
 import io.github.slashncode.nothingeats.platform.http.PlatformJson
@@ -36,6 +39,7 @@ import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.KSerializer
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 
@@ -48,12 +52,13 @@ private val noon = Clock.fixed(Instant.parse("2026-10-24T10:00:00Z"), berlin)
 
 private fun catalogApi(
     clock: Clock = noon,
+    deals: InMemoryDeals = InMemoryDeals(),
     block: suspend ApplicationTestBuilder.(ManageCatalog) -> Unit,
 ) = testApplication {
     val restaurants = InMemoryRestaurants()
     val dishes = InMemoryDishes()
     val manage = ManageCatalog(restaurants, dishes, RecordingCatalogEvents(), DirectTransactions())
-    val routes = CatalogRoutes(BrowseCatalog(restaurants, dishes), manage, clock)
+    val routes = CatalogRoutes(BrowseCatalog(restaurants, dishes), BrowseDeals(deals, dishes, restaurants, clock), manage, clock)
     application {
         installPlatform(Readiness(), HealthChecks(emptySet()), tokens.jwtAuth)
         routing { with(routes) { register() } }
@@ -74,6 +79,25 @@ private val restaurantBody =
 
 class CatalogRoutesTest :
     FunSpec({
+        test("a running deal shows on the menu and in the deals list; an ended one nowhere") {
+            val deals = InMemoryDeals()
+            catalogApi(deals = deals) { manage ->
+                manage.upsertRestaurant(restaurantInput())
+                val dish = manage.upsertDish("phantom-pizza", dishInput(priceCents = 1290))
+                val other = manage.upsertDish("phantom-pizza", dishInput("funghi", position = 2, priceCents = 1190))
+                deals.insert(Deal.of(dish, 30, noon.instant().minusSeconds(60), Duration.ofMinutes(45)))
+                deals.insert(Deal.of(other, 20, noon.instant().minusSeconds(7200), Duration.ofMinutes(30)))
+
+                val menu = client.get("/api/catalog/v1/restaurants/phantom-pizza").body(MenuResponse.serializer())
+                val shown = menu.sections.flatMap { it.dishes }.associateBy { it.slug }
+                shown.getValue("margherita").deal shouldBe DealResponse(900, 30, "2026-10-24T10:44:00Z")
+                shown.getValue("funghi").deal.shouldBeNull()
+
+                val offers = client.get("/api/catalog/v1/deals").body(DealsResponse.serializer())
+                offers.items.map { it.dish.slug to it.restaurant.slug } shouldContainExactly listOf("margherita" to "phantom-pizza")
+            }
+        }
+
         test("restaurants come in the requested language, page by page") {
             catalogApi { manage ->
                 listOf("air-burger", "ghost-gyros", "phantom-pizza").forEach { manage.upsertRestaurant(restaurantInput(slug = it)) }

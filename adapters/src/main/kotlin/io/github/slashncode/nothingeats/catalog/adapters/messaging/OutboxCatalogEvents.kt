@@ -1,6 +1,7 @@
 package io.github.slashncode.nothingeats.catalog.adapters.messaging
 
 import io.github.slashncode.nothingeats.catalog.application.CatalogEvents
+import io.github.slashncode.nothingeats.catalog.domain.Deal
 import io.github.slashncode.nothingeats.catalog.domain.Dish
 import io.github.slashncode.nothingeats.catalog.domain.LocalizedText
 import io.github.slashncode.nothingeats.catalog.domain.Restaurant
@@ -12,8 +13,10 @@ import kotlinx.serialization.Serializable
 object CatalogTopics {
     const val RESTAURANTS = "catalog.restaurant.v1"
     const val DISHES = "catalog.dish.v1"
+    const val DEALS = "catalog.deal.v1"
     const val RESTAURANT_PUBLISHED = "nothingeats.catalog.restaurant.published.v1"
     const val DISH_PUBLISHED = "nothingeats.catalog.dish.published.v1"
+    const val DEAL_PUBLISHED = "nothingeats.catalog.deal.published.v1"
 }
 
 @Serializable
@@ -57,6 +60,18 @@ data class DishPublishedV1(
     val calories: Int,
     val moods: List<String>,
     val available: Boolean,
+)
+
+@Serializable
+data class DealPublishedV1(
+    val dealId: String,
+    val dishId: String,
+    val restaurantId: String,
+    val percentOff: Int,
+    val priceCents: Long,
+    val regularPriceCents: Long,
+    val startsAt: String,
+    val endsAt: String,
 )
 
 private fun LocalizedText.v1() = TextV1(de, en)
@@ -119,6 +134,27 @@ class OutboxCatalogEvents(
                     available = dish.available,
                 ),
                 DishPublishedV1.serializer(),
+            )
+        }
+    }
+
+    override suspend fun dealPublished(deal: Deal) {
+        db.transaction {
+            outbox.enqueue(
+                CatalogTopics.DEALS,
+                deal.id.toString(),
+                CatalogTopics.DEAL_PUBLISHED,
+                DealPublishedV1(
+                    dealId = deal.id.toString(),
+                    dishId = deal.dishId.toString(),
+                    restaurantId = deal.restaurantId.toString(),
+                    percentOff = deal.percentOff,
+                    priceCents = deal.price.cents,
+                    regularPriceCents = deal.regularPrice.cents,
+                    startsAt = deal.startsAt.toString(),
+                    endsAt = deal.endsAt.toString(),
+                ),
+                DealPublishedV1.serializer(),
             )
         }
     }

@@ -1,5 +1,6 @@
 package io.github.slashncode.nothingeats.catalog.app
 
+import io.github.slashncode.nothingeats.catalog.application.DealSettings
 import io.github.slashncode.nothingeats.platform.http.HttpServerConfig
 import io.github.slashncode.nothingeats.platform.http.auth.JwtConfig
 import io.github.slashncode.nothingeats.platform.kafka.KafkaConfig
@@ -19,6 +20,7 @@ data class ServiceConfig(
     val kafka: KafkaConfig = KafkaConfig(),
     val jwt: JwtConfig = JwtConfig(),
     val posthog: PostHogSettings = PostHogSettings(),
+    val deals: DealSettings = DealSettings(),
     val lifecycle: LifecycleConfig = LifecycleConfig(),
 )
 

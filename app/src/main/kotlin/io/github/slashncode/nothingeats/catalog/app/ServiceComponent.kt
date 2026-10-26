@@ -1,16 +1,21 @@
 package io.github.slashncode.nothingeats.catalog.app
 
+import io.github.slashncode.nothingeats.catalog.adapters.deals.DealPlanner
 import io.github.slashncode.nothingeats.catalog.adapters.http.CatalogRoutes
 import io.github.slashncode.nothingeats.catalog.adapters.messaging.OutboxCatalogEvents
+import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedDeals
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedDishes
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedRestaurants
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedTransactions
 import io.github.slashncode.nothingeats.catalog.adapters.seed.LoadSeedTask
 import io.github.slashncode.nothingeats.catalog.application.BrowseCatalog
+import io.github.slashncode.nothingeats.catalog.application.BrowseDeals
 import io.github.slashncode.nothingeats.catalog.application.CatalogEvents
+import io.github.slashncode.nothingeats.catalog.application.Deals
 import io.github.slashncode.nothingeats.catalog.application.Dishes
 import io.github.slashncode.nothingeats.catalog.application.LoadSeed
 import io.github.slashncode.nothingeats.catalog.application.ManageCatalog
+import io.github.slashncode.nothingeats.catalog.application.PlanDeals
 import io.github.slashncode.nothingeats.catalog.application.Restaurants
 import io.github.slashncode.nothingeats.catalog.application.Transactions
 import io.github.slashncode.nothingeats.platform.core.analytics.ProductAnalytics
@@ -168,6 +173,26 @@ abstract class ServiceComponent(
     ): CatalogEvents = OutboxCatalogEvents(outbox, postgres)
 
     @Provides
+    fun deals(postgres: PostgresDatabase): Deals = ExposedDeals(postgres)
+
+    @Provides
+    fun browseDeals(
+        deals: Deals,
+        dishes: Dishes,
+        restaurants: Restaurants,
+    ): BrowseDeals = BrowseDeals(deals, dishes, restaurants)
+
+    @IntoSet
+    @Provides
+    fun dealPlanner(
+        restaurants: Restaurants,
+        dishes: Dishes,
+        deals: Deals,
+        events: CatalogEvents,
+        transactions: Transactions,
+    ): LifecycleComponent = DealPlanner(PlanDeals(restaurants, dishes, deals, events, transactions, config.deals))
+
+    @Provides
     fun browseCatalog(
         restaurants: Restaurants,
         dishes: Dishes,
@@ -185,8 +210,9 @@ abstract class ServiceComponent(
     @Provides
     fun catalogRoutes(
         browse: BrowseCatalog,
+        deals: BrowseDeals,
         manage: ManageCatalog,
-    ): HttpRoutes = CatalogRoutes(browse, manage)
+    ): HttpRoutes = CatalogRoutes(browse, deals, manage)
 
     @IntoSet
     @Provides

@@ -98,6 +98,14 @@ class ExposedRestaurants(
 
     override suspend fun findBySlug(slug: Slug): Restaurant? = one { RestaurantsTable.slug eq slug.value }
 
+    override suspend fun all(): List<Restaurant> =
+        db.transaction(readOnly = true) {
+            RestaurantsTable
+                .selectAll()
+                .orderBy(RestaurantsTable.slug to SortOrder.ASC)
+                .map { it.toRestaurant() }
+        }
+
     override suspend fun findById(id: Uuid): Restaurant? = one { RestaurantsTable.id eq id }
 
     override suspend fun page(

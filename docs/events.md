@@ -1,7 +1,7 @@
-# Events: `catalog.restaurant.v1` and `catalog.dish.v1`
+# Events: `catalog.restaurant.v1`, `catalog.dish.v1` and `catalog.deal.v1`
 
 CloudEvents in structured mode (`application/cloudevents+json`), `source` = `/nothingeats/catalog`,
-record key and `subject` = the restaurant or dish id (ordering per aggregate). Consumers must ignore unknown fields.
+record key and `subject` = the restaurant, dish or deal id (ordering per aggregate). Consumers must ignore unknown fields.
 
 Every event is a full snapshot in all languages, so projections (search, ordering prices) never call back
 into the catalog. An upsert that changes nothing publishes nothing; re-running the seed import is quiet.
@@ -21,3 +21,13 @@ into the catalog. An upsert that changes nothing publishes nothing; re-running t
 The dish event carries the restaurant's slug, name and cuisine as they were when the dish changed. A
 restaurant rename does not republish its dishes; projections that show the restaurant name join on
 `restaurantId` with the restaurant topic.
+
+## `catalog.deal.v1`
+
+| `type` | When | `data` |
+|---|---|---|
+| `nothingeats.catalog.deal.published.v1` | A flash deal was planned (it starts at `startsAt`, usually right away) | `dealId`, `dishId`, `restaurantId`, `percentOff`, `priceCents` (the deal price), `regularPriceCents` (the dish's price when the deal was planned), `startsAt`, `endsAt` (ISO-8601 instants) |
+
+A deal never changes after it was published; it simply ends. Consumers apply it while
+`startsAt <= now < endsAt` and use the lower of the deal price and the dish's current price. There is
+no stock: a restaurant always has food. Ended deals stay on the compacted topic as harmless history.
