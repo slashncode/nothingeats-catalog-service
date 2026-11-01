@@ -86,9 +86,14 @@ class ManageCatalog(
             if (restaurants.findBySlug(restaurant.slug)?.takeIf { it.id != id } != null) {
                 throw catalogInvalid("slug", "${restaurant.slug} belongs to another restaurant")
             }
-            if (restaurant != restaurants.findById(id)) {
+            val existing = restaurants.findById(id)
+            if (restaurant != existing) {
                 restaurants.upsert(restaurant)
                 events.restaurantPublished(restaurant)
+                // Dish events carry the restaurant's name, slug, cuisine and whether it is in the shop.
+                if (existing != null && existing.shownWithDishes() != restaurant.shownWithDishes()) {
+                    dishes.ofRestaurant(id).forEach { events.dishPublished(it, restaurant) }
+                }
             }
             pending.take(id).forEach { (dishId, dish) -> applyDish(dishId, restaurant, dish) }
             restaurant
@@ -125,6 +130,8 @@ class ManageCatalog(
         }
         return dish
     }
+
+    private fun Restaurant.shownWithDishes() = listOf(name, slug, cuisine, archived)
 
     private fun RestaurantInput.toRestaurant(id: Uuid): Restaurant =
         domain {

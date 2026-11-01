@@ -154,7 +154,8 @@ class OutboxCatalogEvents(
                     moods = dish.moods.sorted(),
                     available = dish.available,
                     image = dish.image?.v1(),
-                    archived = dish.archived,
+                    // Left the shop, by itself or with its restaurant.
+                    archived = dish.archived || restaurant.archived,
                 ),
                 DishPublishedV1.serializer(),
             )

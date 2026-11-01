@@ -23,9 +23,9 @@ ordering stops selling it) but keep what refers to it.
 |---|---|---|
 | `nothingeats.catalog.dish.published.v1` | A dish was created or changed | `dishId`, `restaurantId`, `restaurantSlug`, `restaurantName`, `cuisine`, `slug`, `section`, `name`, `description` (each `{de, en}`), `priceCents`, `dietary`, `allergens` (lowercase, sorted), `spiceLevel` (0–3), `calories`, `moods`, `available`, `image`, `archived` |
 
-The dish event carries the restaurant's slug, name and cuisine as they were when the dish changed. A
-restaurant rename does not republish its dishes; projections that show the restaurant name join on
-`restaurantId` with the restaurant topic.
+The dish event carries the restaurant's slug, name and cuisine. When those change, or the restaurant is
+archived or comes back, catalog publishes all its dishes again. A dish's `archived` means it has left the
+shop, by itself or with its restaurant.
 
 ## `catalog.deal.v1`
 

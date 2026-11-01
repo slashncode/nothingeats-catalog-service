@@ -72,6 +72,20 @@ class CatalogUseCasesTest :
                 .shouldBeEmpty()
         }
 
+        test("archiving a restaurant or renaming it publishes its dishes again; other changes do not") {
+            val catalog = Catalog()
+            catalog.restaurant()
+            catalog.dish()
+            catalog.events.events.clear()
+
+            catalog.restaurant(restaurantInput().copy(rating = 4.9))
+            catalog.events.events shouldContainExactly listOf("restaurant:phantom-pizza")
+
+            catalog.restaurant(restaurantInput().copy(rating = 4.9, archived = true))
+            catalog.events.events shouldContainExactly
+                listOf("restaurant:phantom-pizza", "restaurant:phantom-pizza", "dish:phantom-pizza/margherita")
+        }
+
         test("invalid content names the field; a slug taken by another restaurant or dish is refused") {
             val catalog = Catalog()
             catalog.restaurant()
