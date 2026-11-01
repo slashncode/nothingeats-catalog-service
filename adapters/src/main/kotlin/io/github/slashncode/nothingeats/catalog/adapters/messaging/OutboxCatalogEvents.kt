@@ -3,6 +3,7 @@ package io.github.slashncode.nothingeats.catalog.adapters.messaging
 import io.github.slashncode.nothingeats.catalog.application.CatalogEvents
 import io.github.slashncode.nothingeats.catalog.domain.Deal
 import io.github.slashncode.nothingeats.catalog.domain.Dish
+import io.github.slashncode.nothingeats.catalog.domain.Image
 import io.github.slashncode.nothingeats.catalog.domain.LocalizedText
 import io.github.slashncode.nothingeats.catalog.domain.Restaurant
 import io.github.slashncode.nothingeats.platform.kafka.Outbox
@@ -26,6 +27,18 @@ data class TextV1(
 )
 
 @Serializable
+data class ImageV1(
+    val url: String,
+    val cardUrl: String,
+    val wideUrl: String,
+    val width: Int? = null,
+    val height: Int? = null,
+    val focalX: Double? = null,
+    val focalY: Double? = null,
+    val alt: TextV1,
+)
+
+@Serializable
 data class RestaurantPublishedV1(
     val restaurantId: String,
     val slug: String,
@@ -40,6 +53,8 @@ data class RestaurantPublishedV1(
     val longitude: Double,
     val opensAt: String,
     val closesAt: String,
+    val image: ImageV1? = null,
+    val archived: Boolean = false,
 )
 
 @Serializable
@@ -60,6 +75,8 @@ data class DishPublishedV1(
     val calories: Int,
     val moods: List<String>,
     val available: Boolean,
+    val image: ImageV1? = null,
+    val archived: Boolean = false,
 )
 
 @Serializable
@@ -75,6 +92,8 @@ data class DealPublishedV1(
 )
 
 private fun LocalizedText.v1() = TextV1(de, en)
+
+private fun Image.v1() = ImageV1(url, cardUrl, wideUrl, width, height, focalX, focalY, alt.v1())
 
 class OutboxCatalogEvents(
     private val outbox: Outbox,
@@ -100,6 +119,8 @@ class OutboxCatalogEvents(
                     longitude = restaurant.location.longitude,
                     opensAt = restaurant.opensAt.toString(),
                     closesAt = restaurant.closesAt.toString(),
+                    image = restaurant.image?.v1(),
+                    archived = restaurant.archived,
                 ),
                 RestaurantPublishedV1.serializer(),
             )
@@ -132,6 +153,8 @@ class OutboxCatalogEvents(
                     calories = dish.calories,
                     moods = dish.moods.sorted(),
                     available = dish.available,
+                    image = dish.image?.v1(),
+                    archived = dish.archived,
                 ),
                 DishPublishedV1.serializer(),
             )

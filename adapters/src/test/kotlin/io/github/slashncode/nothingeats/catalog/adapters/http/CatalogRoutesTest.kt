@@ -3,11 +3,15 @@ package io.github.slashncode.nothingeats.catalog.adapters.http
 import io.github.slashncode.nothingeats.catalog.application.BrowseCatalog
 import io.github.slashncode.nothingeats.catalog.application.BrowseDeals
 import io.github.slashncode.nothingeats.catalog.application.DirectTransactions
+import io.github.slashncode.nothingeats.catalog.application.DishInput
+import io.github.slashncode.nothingeats.catalog.application.ImageInput
 import io.github.slashncode.nothingeats.catalog.application.InMemoryDeals
 import io.github.slashncode.nothingeats.catalog.application.InMemoryDishes
+import io.github.slashncode.nothingeats.catalog.application.InMemoryPendingDishes
 import io.github.slashncode.nothingeats.catalog.application.InMemoryRestaurants
 import io.github.slashncode.nothingeats.catalog.application.ManageCatalog
 import io.github.slashncode.nothingeats.catalog.application.RecordingCatalogEvents
+import io.github.slashncode.nothingeats.catalog.application.RestaurantInput
 import io.github.slashncode.nothingeats.catalog.application.Translated
 import io.github.slashncode.nothingeats.catalog.application.dishInput
 import io.github.slashncode.nothingeats.catalog.application.restaurantInput
@@ -23,17 +27,13 @@ import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
-import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.put
-import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
@@ -42,6 +42,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
+import kotlin.uuid.Uuid
 
 private val tokens = TestTokens()
 
@@ -50,43 +51,56 @@ private val berlin = ZoneId.of("Europe/Berlin")
 /** 12:00 in Berlin. */
 private val noon = Clock.fixed(Instant.parse("2026-10-24T10:00:00Z"), berlin)
 
+/** Content as the backoffice would publish it; restaurants by slug for the tests' convenience. */
+private class Content(
+    private val manage: ManageCatalog,
+) {
+    private val ids = mutableMapOf<String, Uuid>()
+
+    suspend fun restaurant(input: RestaurantInput = restaurantInput()) =
+        manage.publishRestaurant(
+            ids.getOrPut(input.slug) {
+                Uuid.random()
+            },
+            input,
+        )
+
+    suspend fun dish(
+        input: DishInput = dishInput(),
+        restaurant: String = "phantom-pizza",
+    ) = manage.publishDish(Uuid.random(), ids.getValue(restaurant), input)!!
+}
+
 private fun catalogApi(
     clock: Clock = noon,
     deals: InMemoryDeals = InMemoryDeals(),
-    block: suspend ApplicationTestBuilder.(ManageCatalog) -> Unit,
+    block: suspend ApplicationTestBuilder.(Content) -> Unit,
 ) = testApplication {
     val restaurants = InMemoryRestaurants()
     val dishes = InMemoryDishes()
-    val manage = ManageCatalog(restaurants, dishes, RecordingCatalogEvents(), DirectTransactions())
-    val routes = CatalogRoutes(BrowseCatalog(restaurants, dishes), BrowseDeals(deals, dishes, restaurants, clock), manage, clock)
+    val manage = ManageCatalog(restaurants, dishes, InMemoryPendingDishes(), RecordingCatalogEvents(), DirectTransactions())
+    val routes = CatalogRoutes(BrowseCatalog(restaurants, dishes), BrowseDeals(deals, dishes, restaurants, clock), clock)
     application {
         installPlatform(Readiness(), HealthChecks(emptySet()), tokens.jwtAuth)
         routing { with(routes) { register() } }
     }
-    block(manage)
+    block(Content(manage))
 }
 
 private suspend fun <T> HttpResponse.body(serializer: KSerializer<T>): T = PlatformJson.decodeFromString(serializer, bodyAsText())
 
 private suspend fun HttpResponse.problem() = body(Problem.serializer())
 
-private val restaurantBody =
-    """
-    {"name":"Ghost Gyros","description":{"de":"Gyros aus dem Jenseits.","en":"Gyros from beyond."},
-     "cuisine":"greek","rating":4.5,"deliveryMinutes":35,"deliveryFeeCents":149,"minimumOrderCents":1200,
-     "latitude":53.55,"longitude":9.93,"opensAt":"11:30","closesAt":"01:00"}
-    """.trimIndent()
-
 class CatalogRoutesTest :
     FunSpec({
         test("a running deal shows on the menu and in the deals list; an ended one nowhere") {
             val deals = InMemoryDeals()
-            catalogApi(deals = deals) { manage ->
-                manage.upsertRestaurant(restaurantInput())
-                val dish = manage.upsertDish("phantom-pizza", dishInput(priceCents = 1290))
-                val other = manage.upsertDish("phantom-pizza", dishInput("funghi", position = 2, priceCents = 1190))
-                deals.insert(Deal.of(dish, 30, noon.instant().minusSeconds(60), Duration.ofMinutes(45)))
-                deals.insert(Deal.of(other, 20, noon.instant().minusSeconds(7200), Duration.ofMinutes(30)))
+            catalogApi(deals = deals) { content ->
+                content.restaurant(restaurantInput())
+                val dish = content.dish(dishInput(priceCents = 1290))
+                val other = content.dish(dishInput("funghi", position = 2, priceCents = 1190))
+                deals.upsert(Deal.of(dish, 30, noon.instant().minusSeconds(60), Duration.ofMinutes(45)))
+                deals.upsert(Deal.of(other, 20, noon.instant().minusSeconds(7200), Duration.ofMinutes(30)))
 
                 val menu = client.get("/api/catalog/v1/restaurants/phantom-pizza").body(MenuResponse.serializer())
                 val shown = menu.sections.flatMap { it.dishes }.associateBy { it.slug }
@@ -99,8 +113,8 @@ class CatalogRoutesTest :
         }
 
         test("restaurants come in the requested language, page by page") {
-            catalogApi { manage ->
-                listOf("air-burger", "ghost-gyros", "phantom-pizza").forEach { manage.upsertRestaurant(restaurantInput(slug = it)) }
+            catalogApi { content ->
+                listOf("air-burger", "ghost-gyros", "phantom-pizza").forEach { content.restaurant(restaurantInput(slug = it)) }
 
                 val first = client.get("/api/catalog/v1/restaurants?limit=2&lang=en")
                 first.headers[HttpHeaders.ContentLanguage] shouldBe "en"
@@ -123,14 +137,11 @@ class CatalogRoutesTest :
         }
 
         test("the menu groups dishes by section, in position order") {
-            catalogApi { manage ->
-                manage.upsertRestaurant(restaurantInput())
-                manage.upsertDish("phantom-pizza", dishInput(slug = "diavola", position = 2))
-                manage.upsertDish("phantom-pizza", dishInput(slug = "margherita", position = 1))
-                manage.upsertDish(
-                    "phantom-pizza",
-                    dishInput(slug = "tiramisu", position = 3).copy(section = Translated("Nachspeisen", "Desserts")),
-                )
+            catalogApi { content ->
+                content.restaurant(restaurantInput())
+                content.dish(dishInput(slug = "diavola", position = 2))
+                content.dish(dishInput(slug = "margherita", position = 1))
+                content.dish(dishInput(slug = "tiramisu", position = 3).copy(section = Translated("Nachspeisen", "Desserts")))
 
                 val menu = client.get("/api/catalog/v1/restaurants/phantom-pizza?lang=en").body(MenuResponse.serializer())
 
@@ -153,9 +164,9 @@ class CatalogRoutesTest :
         }
 
         test("open now follows Berlin time, also for hours past midnight") {
-            catalogApi(clock = Clock.fixed(Instant.parse("2026-10-24T22:30:00Z"), berlin)) { manage ->
-                manage.upsertRestaurant(restaurantInput(slug = "phantom-pizza"))
-                manage.upsertRestaurant(restaurantInput(slug = "air-burger").copy(opensAt = "18:00", closesAt = "02:00"))
+            catalogApi(clock = Clock.fixed(Instant.parse("2026-10-24T22:30:00Z"), berlin)) { content ->
+                content.restaurant(restaurantInput(slug = "phantom-pizza"))
+                content.restaurant(restaurantInput(slug = "air-burger").copy(opensAt = "18:00", closesAt = "02:00"))
 
                 val open =
                     client
@@ -169,9 +180,9 @@ class CatalogRoutesTest :
         }
 
         test("a dish comes with its restaurant; unknown things are problems") {
-            catalogApi { manage ->
-                manage.upsertRestaurant(restaurantInput())
-                val dish = manage.upsertDish("phantom-pizza", dishInput())
+            catalogApi { content ->
+                content.restaurant(restaurantInput())
+                val dish = content.dish()
 
                 val found = client.get("/api/catalog/v1/dishes/${dish.id}").body(DishDetailResponse.serializer())
                 found.restaurant.slug shouldBe "phantom-pizza"
@@ -185,42 +196,50 @@ class CatalogRoutesTest :
             }
         }
 
-        test("admin upserts need the admin role and validate their input") {
-            catalogApi {
-                suspend fun put(
-                    body: String,
-                    token: String?,
-                ) = client.put("/api/catalog/v1/admin/restaurants/ghost-gyros") {
-                    token?.let { bearerAuth(it) }
-                    contentType(ContentType.Application.Json)
-                    setBody(body)
-                }
+        test("images come with the alt text in the requested language; without one the dish has none") {
+            catalogApi { content ->
+                val front =
+                    ImageInput(
+                        "/media/1/front.webp",
+                        "/media/1/front-640x400.webp",
+                        "/media/1/front-1280x640.webp",
+                        1600,
+                        1000,
+                        50.0,
+                        40.0,
+                        Translated("Der Laden", "The shop"),
+                    )
+                content.restaurant(restaurantInput().copy(image = front))
+                content.dish(dishInput().copy(image = front.copy(alt = Translated("Eine Pizza", "A pizza"))))
+                content.dish(dishInput("plain", position = 2))
 
-                put(restaurantBody, token = null).status shouldBe HttpStatusCode.Unauthorized
-                put(restaurantBody, tokens.accessToken()).status shouldBe HttpStatusCode.Forbidden
+                val menu = client.get("/api/catalog/v1/restaurants/phantom-pizza?lang=en").body(MenuResponse.serializer())
 
-                val admin = tokens.accessToken(roles = setOf("admin"))
-                put(restaurantBody, admin).status shouldBe HttpStatusCode.OK
-                client.get("/api/catalog/v1/restaurants/ghost-gyros").status shouldBe HttpStatusCode.OK
+                menu.restaurant.image shouldBe
+                    ImageResponse(
+                        "/media/1/front.webp",
+                        "/media/1/front-640x400.webp",
+                        "/media/1/front-1280x640.webp",
+                        "The shop",
+                        1600,
+                        1000,
+                        50.0,
+                        40.0,
+                    )
+                val dishes =
+                    menu.sections
+                        .single()
+                        .dishes
+                        .associateBy { it.slug }
+                dishes.getValue("margherita").image!!.alt shouldBe "A pizza"
+                dishes.getValue("plain").image.shouldBeNull()
+            }
+        }
 
-                val invalid = put(restaurantBody.replace("\"11:30\"", "\"noon\""), admin)
-                invalid.status shouldBe HttpStatusCode.UnprocessableEntity
-                invalid.problem().code shouldBe "CATALOG_INVALID"
-
-                val dish =
-                    client.put("/api/catalog/v1/admin/restaurants/ghost-gyros/dishes/gyros-plate") {
-                        bearerAuth(admin)
-                        contentType(ContentType.Application.Json)
-                        setBody(
-                            """
-                            {"section":{"de":"Hauptgerichte","en":"Mains"},"name":{"de":"Gyros-Teller","en":"Gyros plate"},
-                             "description":{"de":"Mit Tzatziki.","en":"With tzatziki."},"priceCents":1450,"calories":1180,
-                             "allergens":["milk"]}
-                            """.trimIndent(),
-                        )
-                    }
-                dish.status shouldBe HttpStatusCode.OK
-                dish.body(DishResponse.serializer()).allergens shouldContainExactly listOf("milk")
+        test("the API only reads: changes come from the backoffice") {
+            catalogApi { content ->
+                content.restaurant()
+                client.put("/api/catalog/v1/admin/restaurants/phantom-pizza").status shouldBe HttpStatusCode.NotFound
             }
         }
     })

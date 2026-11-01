@@ -2,7 +2,10 @@ package io.github.slashncode.nothingeats.catalog.application
 
 import io.github.slashncode.nothingeats.catalog.domain.Deal
 import io.github.slashncode.nothingeats.catalog.domain.Dish
+import io.github.slashncode.nothingeats.catalog.domain.InvalidCatalogData
 import io.github.slashncode.nothingeats.catalog.domain.Restaurant
+import io.github.slashncode.nothingeats.platform.core.error.AppError
+import io.github.slashncode.nothingeats.platform.core.error.ErrorCode
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -10,8 +13,10 @@ import java.time.ZoneId
 import kotlin.random.Random
 import kotlin.uuid.Uuid
 
+/** The planner's settings; editors change them in the backoffice (`backoffice.deal-planner.v1`). */
 data class DealSettings(
-    /** How many flash deals run at the same time, each at a different restaurant. */
+    val enabled: Boolean = true,
+    /** How many flash deals run at the same time (scheduled ones included), each at a different restaurant. */
     val concurrent: Int = 3,
     val durations: List<Duration> = listOf(Duration.ofMinutes(30), Duration.ofMinutes(45), Duration.ofMinutes(60)),
     val percentages: List<Int> = listOf(20, 25, 30, 40),
@@ -29,7 +34,8 @@ data class PlannedDeals(
 /**
  * Keeps [DealSettings.concurrent] flash deals running: when deals have ended, new ones start at
  * restaurants that are open for the deal's whole duration (no deal on a closed kitchen, none that
- * outlives the opening hours). Runs on every pod; the planning lock lets one of them plan.
+ * outlives the opening hours). Deals scheduled in the backoffice count and keep their restaurant
+ * to themselves. Runs on every pod; the planning lock lets one of them plan.
  */
 class PlanDeals(
     private val restaurants: Restaurants,
@@ -37,15 +43,19 @@ class PlanDeals(
     private val deals: Deals,
     private val events: CatalogEvents,
     private val transactions: Transactions,
-    private val settings: DealSettings = DealSettings(),
+    private val plannerSettings: DealPlannerSettings,
+    /** Until the backoffice has published settings. */
+    private val defaults: DealSettings = DealSettings(),
     private val clock: Clock = Clock.systemUTC(),
     private val random: Random = Random.Default,
 ) {
     suspend operator fun invoke(): PlannedDeals =
         transactions.run {
             if (!deals.tryLockPlanning()) return@run PlannedDeals(emptyList(), 0)
+            val settings = plannerSettings.current() ?: defaults
             val now = clock.instant()
             val deleted = deals.deleteEndedBefore(now - settings.retention)
+            if (!settings.enabled) return@run PlannedDeals(emptyList(), deleted)
             val active = deals.activeAt(now)
             val missing = settings.concurrent - active.size
             if (missing <= 0) return@run PlannedDeals(emptyList(), deleted)
@@ -54,10 +64,10 @@ class PlanDeals(
             val started = mutableListOf<Deal>()
             for (restaurant in restaurants.all().filter { it.id !in busy }.shuffled(random)) {
                 if (started.size == missing) break
-                plan(restaurant, now)?.let { started += it }
+                plan(restaurant, now, settings)?.let { started += it }
             }
             started.forEach {
-                deals.insert(it)
+                deals.upsert(it)
                 events.dealPublished(it)
             }
             PlannedDeals(started, deleted)
@@ -66,6 +76,7 @@ class PlanDeals(
     private suspend fun plan(
         restaurant: Restaurant,
         now: Instant,
+        settings: DealSettings,
     ): Deal? {
         val duration = settings.durations.random(random)
         val end = now + duration
@@ -77,13 +88,75 @@ class PlanDeals(
         val dish: Dish =
             dishes
                 .ofRestaurant(restaurant.id)
-                .filter { it.available && it.price.cents >= settings.minimumPriceCents }
+                .filter { it.available && !it.archived && it.price.cents >= settings.minimumPriceCents }
                 .randomOrNull(random) ?: return null
         return Deal.of(dish, settings.percentages.random(random), now, duration)
     }
 
     private companion object {
         val BERLIN: ZoneId = ZoneId.of("Europe/Berlin")
+    }
+}
+
+/** A deal as the backoffice scheduled (or cancelled) it. */
+data class DealSchedule(
+    val dealId: Uuid,
+    val dishId: Uuid,
+    val percentOff: Int,
+    val startsAt: Instant,
+    val endsAt: Instant,
+    val cancelled: Boolean,
+)
+
+/**
+ * Deals an editor scheduled in the backoffice: priced from the dish as it is now, published like
+ * planned ones. A cancelled deal keeps its id and its window closes, so every projection ends it.
+ */
+class ScheduleDeals(
+    private val deals: Deals,
+    private val dishes: Dishes,
+    private val events: CatalogEvents,
+    private val transactions: Transactions,
+    private val clock: Clock = Clock.systemUTC(),
+) {
+    suspend operator fun invoke(schedule: DealSchedule): Deal? =
+        transactions.run {
+            val existing = deals.findById(schedule.dealId)
+            val deal =
+                if (schedule.cancelled) {
+                    existing?.cancelledAt(clock.instant()) ?: return@run null
+                } else {
+                    val dish =
+                        dishes.findById(schedule.dishId)
+                            ?: throw AppError.NotFound(ErrorCode("DISH_NOT_FOUND"), "Dish ${schedule.dishId} does not exist")
+                    try {
+                        Deal.scheduled(schedule.dealId, dish, schedule.percentOff, schedule.startsAt, schedule.endsAt)
+                    } catch (e: InvalidCatalogData) {
+                        throw catalogInvalid(e.field, e.message)
+                    }
+                }
+            if (deal != existing) {
+                deals.upsert(deal)
+                events.dealPublished(deal)
+            }
+            deal
+        }
+}
+
+/** The planner's settings from the backoffice, checked before they replace the old ones. */
+class UpdateDealPlanner(
+    private val settings: DealPlannerSettings,
+) {
+    suspend operator fun invoke(update: DealSettings) {
+        if (update.concurrent < 0) throw catalogInvalid("concurrent", "must not be negative")
+        if (update.durations.isEmpty() || update.durations.any { it.isNegative || it.isZero }) {
+            throw catalogInvalid("durationsMinutes", "needs at least one positive duration")
+        }
+        if (update.percentages.isEmpty() || update.percentages.any { it !in Deal.MIN_PERCENT..Deal.MAX_PERCENT }) {
+            throw catalogInvalid("percentages", "needs percentages between ${Deal.MIN_PERCENT} and ${Deal.MAX_PERCENT}")
+        }
+        if (update.minimumPriceCents < 0) throw catalogInvalid("minimumPriceCents", "must not be negative")
+        settings.save(update)
     }
 }
 
@@ -102,8 +175,8 @@ class BrowseDeals(
 ) {
     suspend fun active(): List<DealOffer> =
         deals.activeAt(clock.instant()).mapNotNull { deal ->
-            val dish = dishes.findById(deal.dishId)?.takeIf { it.available } ?: return@mapNotNull null
-            val restaurant = restaurants.findById(deal.restaurantId) ?: return@mapNotNull null
+            val dish = dishes.findById(deal.dishId)?.takeIf { it.available && !it.archived } ?: return@mapNotNull null
+            val restaurant = restaurants.findById(deal.restaurantId)?.takeIf { !it.archived } ?: return@mapNotNull null
             DealOffer(deal, dish, restaurant)
         }
 

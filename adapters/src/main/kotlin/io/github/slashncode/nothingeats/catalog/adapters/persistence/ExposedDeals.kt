@@ -8,14 +8,16 @@ import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.greater
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.lessEq
 import org.jetbrains.exposed.v1.javatime.timestamp
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
-import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.upsert
 import java.time.Instant
+import kotlin.uuid.Uuid
 
 internal object DealsTable : Table("deals") {
     val id = uuid("id")
@@ -33,9 +35,9 @@ internal object DealsTable : Table("deals") {
 class ExposedDeals(
     private val db: PostgresDatabase,
 ) : Deals {
-    override suspend fun insert(deal: Deal) {
+    override suspend fun upsert(deal: Deal) {
         db.transaction {
-            DealsTable.insert {
+            DealsTable.upsert(DealsTable.id) {
                 it[id] = deal.id
                 it[dishId] = deal.dishId
                 it[restaurantId] = deal.restaurantId
@@ -47,6 +49,15 @@ class ExposedDeals(
             }
         }
     }
+
+    override suspend fun findById(id: Uuid): Deal? =
+        db.transaction(readOnly = true) {
+            DealsTable
+                .selectAll()
+                .where { DealsTable.id eq id }
+                .singleOrNull()
+                ?.toDeal()
+        }
 
     override suspend fun activeAt(time: Instant): List<Deal> =
         db.transaction(readOnly = true) {

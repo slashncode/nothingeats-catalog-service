@@ -7,11 +7,14 @@ import io.github.slashncode.nothingeats.catalog.domain.Allergen
 import io.github.slashncode.nothingeats.catalog.domain.DietaryTag
 import io.github.slashncode.nothingeats.catalog.domain.Dish
 import io.github.slashncode.nothingeats.catalog.domain.GeoPoint
+import io.github.slashncode.nothingeats.catalog.domain.Image
 import io.github.slashncode.nothingeats.catalog.domain.LocalizedText
 import io.github.slashncode.nothingeats.catalog.domain.Money
 import io.github.slashncode.nothingeats.catalog.domain.Restaurant
 import io.github.slashncode.nothingeats.catalog.domain.Slug
 import io.github.slashncode.nothingeats.platform.persistence.PostgresDatabase
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.Op
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -24,6 +27,40 @@ import org.jetbrains.exposed.v1.javatime.time
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.upsert
 import kotlin.uuid.Uuid
+
+/** Images are stored as JSON next to the row; they are only ever read with it. */
+@Serializable
+internal data class StoredImage(
+    val url: String,
+    val cardUrl: String,
+    val wideUrl: String,
+    val width: Int? = null,
+    val height: Int? = null,
+    val focalX: Double? = null,
+    val focalY: Double? = null,
+    val altDe: String,
+    val altEn: String,
+)
+
+private val imageJson = Json { ignoreUnknownKeys = true }
+
+internal fun Image.encode(): String =
+    imageJson.encodeToString(StoredImage.serializer(), StoredImage(url, cardUrl, wideUrl, width, height, focalX, focalY, alt.de, alt.en))
+
+internal fun decodeImage(raw: String?): Image? =
+    raw?.let {
+        val stored = imageJson.decodeFromString(StoredImage.serializer(), it)
+        Image(
+            stored.url,
+            stored.cardUrl,
+            stored.wideUrl,
+            stored.width,
+            stored.height,
+            stored.focalX,
+            stored.focalY,
+            LocalizedText(stored.altDe, stored.altEn),
+        )
+    }
 
 internal object RestaurantsTable : Table("restaurants") {
     val id = uuid("id")
@@ -40,6 +77,8 @@ internal object RestaurantsTable : Table("restaurants") {
     val longitude = double("longitude")
     val opensAt = time("opens_at")
     val closesAt = time("closes_at")
+    val image = text("image").nullable()
+    val archived = bool("archived")
 
     override val primaryKey = PrimaryKey(id)
 }
@@ -62,6 +101,8 @@ internal object DishesTable : Table("dishes") {
     val moods = array<String>("moods", TextColumnType())
     val position = integer("position")
     val available = bool("available")
+    val image = text("image").nullable()
+    val archived = bool("archived")
 
     override val primaryKey = PrimaryKey(id)
 }
@@ -92,6 +133,8 @@ class ExposedRestaurants(
                 it[longitude] = restaurant.location.longitude
                 it[opensAt] = restaurant.opensAt
                 it[closesAt] = restaurant.closesAt
+                it[image] = restaurant.image?.encode()
+                it[archived] = restaurant.archived
             }
         }
     }
@@ -102,6 +145,7 @@ class ExposedRestaurants(
         db.transaction(readOnly = true) {
             RestaurantsTable
                 .selectAll()
+                .where { RestaurantsTable.archived eq false }
                 .orderBy(RestaurantsTable.slug to SortOrder.ASC)
                 .map { it.toRestaurant() }
         }
@@ -116,6 +160,7 @@ class ExposedRestaurants(
         db.transaction(readOnly = true) {
             val conditions =
                 listOfNotNull<Op<Boolean>>(
+                    RestaurantsTable.archived eq false,
                     after?.let { RestaurantsTable.slug greater it.value },
                     cuisine?.let { RestaurantsTable.cuisine eq it.value },
                 )
@@ -150,6 +195,8 @@ class ExposedRestaurants(
             location = GeoPoint(this[RestaurantsTable.latitude], this[RestaurantsTable.longitude]),
             opensAt = this[RestaurantsTable.opensAt],
             closesAt = this[RestaurantsTable.closesAt],
+            image = decodeImage(this[RestaurantsTable.image]),
+            archived = this[RestaurantsTable.archived],
         )
 }
 
@@ -176,6 +223,8 @@ class ExposedDishes(
                 it[moods] = dish.moods.sorted()
                 it[position] = dish.position
                 it[available] = dish.available
+                it[image] = dish.image?.encode()
+                it[archived] = dish.archived
             }
         }
     }
@@ -225,5 +274,7 @@ class ExposedDishes(
             moods = this[DishesTable.moods].toSet(),
             position = this[DishesTable.position],
             available = this[DishesTable.available],
+            image = decodeImage(this[DishesTable.image]),
+            archived = this[DishesTable.archived],
         )
 }

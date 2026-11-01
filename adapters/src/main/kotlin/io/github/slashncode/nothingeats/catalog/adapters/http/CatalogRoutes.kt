@@ -2,26 +2,20 @@ package io.github.slashncode.nothingeats.catalog.adapters.http
 
 import io.github.slashncode.nothingeats.catalog.application.BrowseCatalog
 import io.github.slashncode.nothingeats.catalog.application.BrowseDeals
-import io.github.slashncode.nothingeats.catalog.application.DishInput
-import io.github.slashncode.nothingeats.catalog.application.ManageCatalog
-import io.github.slashncode.nothingeats.catalog.application.RestaurantInput
-import io.github.slashncode.nothingeats.catalog.application.Translated
 import io.github.slashncode.nothingeats.catalog.domain.Deal
 import io.github.slashncode.nothingeats.catalog.domain.Dish
+import io.github.slashncode.nothingeats.catalog.domain.Image
 import io.github.slashncode.nothingeats.catalog.domain.Language
 import io.github.slashncode.nothingeats.catalog.domain.Restaurant
 import io.github.slashncode.nothingeats.platform.http.HttpRoutes
 import io.github.slashncode.nothingeats.platform.http.auth.public
-import io.github.slashncode.nothingeats.platform.http.auth.requireRole
 import io.ktor.http.HttpHeaders
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.acceptLanguage
-import io.ktor.server.request.receive
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
-import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 import kotlinx.serialization.Serializable
 import java.time.Clock
@@ -32,6 +26,19 @@ import java.time.ZoneId
 data class Location(
     val latitude: Double,
     val longitude: Double,
+)
+
+/** An uploaded picture: [cardUrl] for cards, [wideUrl] for headers; focal point in percent. */
+@Serializable
+data class ImageResponse(
+    val url: String,
+    val cardUrl: String,
+    val wideUrl: String,
+    val alt: String,
+    val width: Int? = null,
+    val height: Int? = null,
+    val focalX: Double? = null,
+    val focalY: Double? = null,
 )
 
 @Serializable
@@ -48,6 +55,7 @@ data class RestaurantResponse(
     val opensAt: String,
     val closesAt: String,
     val location: Location,
+    val image: ImageResponse? = null,
 )
 
 @Serializable
@@ -78,6 +86,8 @@ data class DishResponse(
     val moods: List<String>,
     val available: Boolean,
     val deal: DealResponse? = null,
+    /** Null: the shop draws its illustration. */
+    val image: ImageResponse? = null,
 )
 
 @Serializable
@@ -117,52 +127,13 @@ data class DealsResponse(
     val items: List<DealOfferResponse>,
 )
 
-@Serializable
-data class TranslatedRequest(
-    val de: String,
-    val en: String,
-)
-
-@Serializable
-data class RestaurantRequest(
-    val name: String,
-    val description: TranslatedRequest,
-    val cuisine: String,
-    val rating: Double,
-    val deliveryMinutes: Int,
-    val deliveryFeeCents: Long,
-    val minimumOrderCents: Long,
-    val latitude: Double,
-    val longitude: Double,
-    val opensAt: String,
-    val closesAt: String,
-)
-
-@Serializable
-data class DishRequest(
-    val section: TranslatedRequest,
-    val name: TranslatedRequest,
-    val description: TranslatedRequest,
-    val priceCents: Long,
-    val dietary: Set<String> = emptySet(),
-    val allergens: Set<String> = emptySet(),
-    val spiceLevel: Int = 0,
-    val calories: Int,
-    val moods: Set<String> = emptySet(),
-    val position: Int = 0,
-    val available: Boolean = true,
-)
-
-private fun TranslatedRequest.toInput() = Translated(de, en)
-
 /**
- * `/api/catalog/v1`: public browsing in the caller's language (`?lang=` wins over Accept-Language),
- * admin upserts for role `admin`. "Open now" is evaluated in Berlin time.
+ * `/api/catalog/v1`: public browsing in the caller's language (`?lang=` wins over Accept-Language).
+ * "Open now" is evaluated in Berlin time. Changes come from the backoffice as events, not through here.
  */
 class CatalogRoutes(
     private val browse: BrowseCatalog,
     private val deals: BrowseDeals,
-    private val manage: ManageCatalog,
     private val clock: Clock = Clock.system(ZoneId.of("Europe/Berlin")),
 ) : HttpRoutes {
     override fun Route.register() {
@@ -212,51 +183,6 @@ class CatalogRoutes(
                     call.respond(DealsResponse(offers))
                 }
             }
-            requireRole("admin") {
-                put("/admin/restaurants/{slug}") {
-                    val request = call.receive<RestaurantRequest>()
-                    val restaurant =
-                        manage.upsertRestaurant(
-                            RestaurantInput(
-                                slug = call.parameters["slug"].orEmpty(),
-                                name = request.name,
-                                description = request.description.toInput(),
-                                cuisine = request.cuisine,
-                                rating = request.rating,
-                                deliveryMinutes = request.deliveryMinutes,
-                                deliveryFeeCents = request.deliveryFeeCents,
-                                minimumOrderCents = request.minimumOrderCents,
-                                latitude = request.latitude,
-                                longitude = request.longitude,
-                                opensAt = request.opensAt,
-                                closesAt = request.closesAt,
-                            ),
-                        )
-                    call.respond(restaurant.toResponse(call.language()))
-                }
-                put("/admin/restaurants/{slug}/dishes/{dish}") {
-                    val request = call.receive<DishRequest>()
-                    val dish =
-                        manage.upsertDish(
-                            call.parameters["slug"].orEmpty(),
-                            DishInput(
-                                slug = call.parameters["dish"].orEmpty(),
-                                section = request.section.toInput(),
-                                name = request.name.toInput(),
-                                description = request.description.toInput(),
-                                priceCents = request.priceCents,
-                                dietary = request.dietary,
-                                allergens = request.allergens,
-                                spiceLevel = request.spiceLevel,
-                                calories = request.calories,
-                                moods = request.moods,
-                                position = request.position,
-                                available = request.available,
-                            ),
-                        )
-                    call.respond(dish.toResponse(call.language()))
-                }
-            }
         }
     }
 
@@ -281,6 +207,7 @@ class CatalogRoutes(
             opensAt = opensAt.toString(),
             closesAt = closesAt.toString(),
             location = Location(location.latitude, location.longitude),
+            image = image?.toResponse(language),
         )
 
     private fun Dish.toResponse(
@@ -299,7 +226,10 @@ class CatalogRoutes(
         moods = moods.sorted(),
         available = available,
         deal = deal?.let { DealResponse(it.price.cents, it.percentOff, it.endsAt.toString()) },
+        image = image?.toResponse(language),
     )
+
+    private fun Image.toResponse(language: Language) = ImageResponse(url, cardUrl, wideUrl, alt.of(language), width, height, focalX, focalY)
 
     private companion object {
         const val DEFAULT_PAGE = 20

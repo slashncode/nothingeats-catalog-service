@@ -7,7 +7,8 @@ import kotlin.uuid.Uuid
 
 /**
  * A flash deal: one dish costs less for a short while. There is no stock and no "only 3 left":
- * a restaurant always has food, so the only urgency is the clock.
+ * a restaurant always has food, so the only urgency is the clock. Planned by catalog or scheduled
+ * in the backoffice; a cancelled deal keeps its id and its window closes.
  */
 data class Deal(
     val id: Uuid,
@@ -21,11 +22,15 @@ data class Deal(
 ) {
     init {
         if (percentOff !in MIN_PERCENT..MAX_PERCENT) throw InvalidCatalogData("percentOff", "must be between $MIN_PERCENT and $MAX_PERCENT")
-        if (!endsAt.isAfter(startsAt)) throw InvalidCatalogData("endsAt", "must be after startsAt")
+        // An empty window (start = end) is a deal cancelled before it began: never active.
+        if (endsAt.isBefore(startsAt)) throw InvalidCatalogData("endsAt", "must not be before startsAt")
         if (price.cents >= regularPrice.cents) throw InvalidCatalogData("price", "must be below the regular price")
     }
 
     fun isActiveAt(time: Instant): Boolean = !time.isBefore(startsAt) && time.isBefore(endsAt)
+
+    /** Closes the window at [time]: at once if it runs, before it starts if it has not. */
+    fun cancelledAt(time: Instant): Deal = copy(endsAt = maxOf(startsAt, minOf(endsAt, time)))
 
     companion object {
         const val MIN_PERCENT = 5
@@ -38,6 +43,18 @@ data class Deal(
             duration: Duration,
             id: Uuid = Uuid.random(),
         ) = Deal(id, dish.id, dish.restaurantId, percentOff, discounted(dish.price, percentOff), dish.price, startsAt, startsAt + duration)
+
+        /** A deal scheduled in the backoffice, priced from the dish as it is now. */
+        fun scheduled(
+            id: Uuid,
+            dish: Dish,
+            percentOff: Int,
+            startsAt: Instant,
+            endsAt: Instant,
+        ): Deal {
+            if (!endsAt.isAfter(startsAt)) throw InvalidCatalogData("endsAt", "must be after startsAt")
+            return Deal(id, dish.id, dish.restaurantId, percentOff, discounted(dish.price, percentOff), dish.price, startsAt, endsAt)
+        }
 
         /** Rounded to whole ten cents, like a menu would print it. */
         fun discounted(

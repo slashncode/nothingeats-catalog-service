@@ -2,22 +2,30 @@ package io.github.slashncode.nothingeats.catalog.app
 
 import io.github.slashncode.nothingeats.catalog.adapters.deals.DealPlanner
 import io.github.slashncode.nothingeats.catalog.adapters.http.CatalogRoutes
+import io.github.slashncode.nothingeats.catalog.adapters.messaging.BackofficeCatalogHandler
+import io.github.slashncode.nothingeats.catalog.adapters.messaging.BackofficeDealPlannerHandler
+import io.github.slashncode.nothingeats.catalog.adapters.messaging.BackofficeDealsHandler
+import io.github.slashncode.nothingeats.catalog.adapters.messaging.BackofficeTopics
 import io.github.slashncode.nothingeats.catalog.adapters.messaging.OutboxCatalogEvents
+import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedDealPlannerSettings
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedDeals
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedDishes
+import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedPendingDishes
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedRestaurants
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedTransactions
-import io.github.slashncode.nothingeats.catalog.adapters.seed.LoadSeedTask
 import io.github.slashncode.nothingeats.catalog.application.BrowseCatalog
 import io.github.slashncode.nothingeats.catalog.application.BrowseDeals
 import io.github.slashncode.nothingeats.catalog.application.CatalogEvents
+import io.github.slashncode.nothingeats.catalog.application.DealPlannerSettings
 import io.github.slashncode.nothingeats.catalog.application.Deals
 import io.github.slashncode.nothingeats.catalog.application.Dishes
-import io.github.slashncode.nothingeats.catalog.application.LoadSeed
 import io.github.slashncode.nothingeats.catalog.application.ManageCatalog
+import io.github.slashncode.nothingeats.catalog.application.PendingDishes
 import io.github.slashncode.nothingeats.catalog.application.PlanDeals
 import io.github.slashncode.nothingeats.catalog.application.Restaurants
+import io.github.slashncode.nothingeats.catalog.application.ScheduleDeals
 import io.github.slashncode.nothingeats.catalog.application.Transactions
+import io.github.slashncode.nothingeats.catalog.application.UpdateDealPlanner
 import io.github.slashncode.nothingeats.platform.core.analytics.ProductAnalytics
 import io.github.slashncode.nothingeats.platform.core.lifecycle.HealthCheck
 import io.github.slashncode.nothingeats.platform.core.lifecycle.HealthChecks
@@ -31,6 +39,9 @@ import io.github.slashncode.nothingeats.platform.http.HttpExtension
 import io.github.slashncode.nothingeats.platform.http.HttpRoutes
 import io.github.slashncode.nothingeats.platform.http.HttpServer
 import io.github.slashncode.nothingeats.platform.http.auth.JwtAuth
+import io.github.slashncode.nothingeats.platform.kafka.EventConsumer
+import io.github.slashncode.nothingeats.platform.kafka.EventConsumerConfig
+import io.github.slashncode.nothingeats.platform.kafka.EventHandler
 import io.github.slashncode.nothingeats.platform.kafka.KafkaClients
 import io.github.slashncode.nothingeats.platform.kafka.KafkaMigrations
 import io.github.slashncode.nothingeats.platform.kafka.Outbox
@@ -54,7 +65,7 @@ annotation class ServiceScope
 
 /**
  * The composition root: the only place that wires ports to adapters.
- * Lifecycle components, health checks, routes and cron tasks are collected with `@IntoSet`.
+ * Lifecycle components, health checks, routes, event handlers and cron tasks are collected with `@IntoSet`.
  */
 @ServiceScope
 @Component
@@ -155,6 +166,28 @@ abstract class ServiceComponent(
     @Provides
     fun purgeMessaging(postgres: PostgresDatabase): CronTask = PurgeMessagingTask(postgres)
 
+    @ServiceScope
+    @Provides
+    fun eventConsumer(
+        handlers: Set<EventHandler>,
+        postgres: PostgresDatabase,
+    ): EventConsumer =
+        EventConsumer(
+            config = EventConsumerConfig(groupId = "catalog-service"),
+            handlers = handlers,
+            db = postgres,
+            consumerFactory = { KafkaClients.consumer(config.kafka, "catalog-service") },
+            deadLetters = KafkaClients.producer(config.kafka, "catalog-service-dlq"),
+        )
+
+    @IntoSet
+    @Provides
+    fun eventConsumerLifecycle(consumer: EventConsumer): LifecycleComponent = consumer
+
+    @IntoSet
+    @Provides
+    fun eventConsumerHealth(consumer: EventConsumer): HealthCheck = consumer
+
     // Catalog
 
     @Provides
@@ -176,6 +209,12 @@ abstract class ServiceComponent(
     fun deals(postgres: PostgresDatabase): Deals = ExposedDeals(postgres)
 
     @Provides
+    fun pendingDishes(postgres: PostgresDatabase): PendingDishes = ExposedPendingDishes(postgres)
+
+    @Provides
+    fun dealPlannerSettings(postgres: PostgresDatabase): DealPlannerSettings = ExposedDealPlannerSettings(postgres)
+
+    @Provides
     fun browseDeals(
         deals: Deals,
         dishes: Dishes,
@@ -190,7 +229,8 @@ abstract class ServiceComponent(
         deals: Deals,
         events: CatalogEvents,
         transactions: Transactions,
-    ): LifecycleComponent = DealPlanner(PlanDeals(restaurants, dishes, deals, events, transactions, config.deals))
+        settings: DealPlannerSettings,
+    ): LifecycleComponent = DealPlanner(PlanDeals(restaurants, dishes, deals, events, transactions, settings, config.deals))
 
     @Provides
     fun browseCatalog(
@@ -202,19 +242,38 @@ abstract class ServiceComponent(
     fun manageCatalog(
         restaurants: Restaurants,
         dishes: Dishes,
+        pending: PendingDishes,
         events: CatalogEvents,
         transactions: Transactions,
-    ): ManageCatalog = ManageCatalog(restaurants, dishes, events, transactions)
+    ): ManageCatalog = ManageCatalog(restaurants, dishes, pending, events, transactions)
 
     @IntoSet
     @Provides
     fun catalogRoutes(
         browse: BrowseCatalog,
         deals: BrowseDeals,
-        manage: ManageCatalog,
-    ): HttpRoutes = CatalogRoutes(browse, deals, manage)
+    ): HttpRoutes = CatalogRoutes(browse, deals)
+
+    // The backoffice's content (record 040)
 
     @IntoSet
     @Provides
-    fun loadSeed(manage: ManageCatalog): CronTask = LoadSeedTask(LoadSeed(manage))
+    fun backofficeRestaurants(manage: ManageCatalog): EventHandler = BackofficeCatalogHandler(BackofficeTopics.RESTAURANTS, manage)
+
+    @IntoSet
+    @Provides
+    fun backofficeDishes(manage: ManageCatalog): EventHandler = BackofficeCatalogHandler(BackofficeTopics.DISHES, manage)
+
+    @IntoSet
+    @Provides
+    fun backofficeDeals(
+        deals: Deals,
+        dishes: Dishes,
+        events: CatalogEvents,
+        transactions: Transactions,
+    ): EventHandler = BackofficeDealsHandler(ScheduleDeals(deals, dishes, events, transactions))
+
+    @IntoSet
+    @Provides
+    fun backofficeDealPlanner(settings: DealPlannerSettings): EventHandler = BackofficeDealPlannerHandler(UpdateDealPlanner(settings))
 }

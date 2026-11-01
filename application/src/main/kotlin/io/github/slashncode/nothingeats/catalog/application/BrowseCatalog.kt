@@ -46,17 +46,21 @@ class BrowseCatalog(
 
     suspend fun menu(restaurantSlug: String): Menu {
         val restaurant = restaurantOrNotFound(restaurantSlug)
-        return Menu(restaurant, dishes.ofRestaurant(restaurant.id).sortedWith(compareBy({ it.position }, { it.slug.value })))
+        val menu = dishes.ofRestaurant(restaurant.id).filterNot { it.archived }
+        return Menu(restaurant, menu.sortedWith(compareBy({ it.position }, { it.slug.value })))
     }
 
+    /** Archived dishes and dishes of archived restaurants are gone for customers. */
     suspend fun dish(id: String): DishWithRestaurant {
-        val dish = runCatching { Uuid.parse(id) }.getOrNull()?.let { dishes.findById(it) } ?: throw dishNotFound(id)
-        val restaurant = restaurants.findById(dish.restaurantId) ?: throw dishNotFound(id)
+        val dish =
+            runCatching { Uuid.parse(id) }.getOrNull()?.let { dishes.findById(it) }?.takeIf { !it.archived }
+                ?: throw dishNotFound(id)
+        val restaurant = restaurants.findById(dish.restaurantId)?.takeIf { !it.archived } ?: throw dishNotFound(id)
         return DishWithRestaurant(dish, restaurant)
     }
 
     private suspend fun restaurantOrNotFound(slug: String): Restaurant =
-        runCatching { Slug(slug) }.getOrNull()?.let { restaurants.findBySlug(it) }
+        runCatching { Slug(slug) }.getOrNull()?.let { restaurants.findBySlug(it) }?.takeIf { !it.archived }
             ?: throw AppError.NotFound(ErrorCode("RESTAURANT_NOT_FOUND"), "Restaurant $slug does not exist")
 
     private fun dishNotFound(id: String) = AppError.NotFound(ErrorCode("DISH_NOT_FOUND"), "Dish $id does not exist")

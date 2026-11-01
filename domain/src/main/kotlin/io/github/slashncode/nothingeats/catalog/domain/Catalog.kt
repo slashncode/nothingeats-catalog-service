@@ -80,6 +80,27 @@ data class GeoPoint(
 
 enum class DietaryTag { VEGAN, VEGETARIAN, GLUTEN_FREE, LACTOSE_FREE, HALAL }
 
+/**
+ * An uploaded picture (backoffice, Garage): public paths of the original and two variants, the
+ * focal point in percent, alt texts.
+ */
+data class Image(
+    val url: String,
+    val cardUrl: String,
+    val wideUrl: String,
+    val width: Int?,
+    val height: Int?,
+    val focalX: Double?,
+    val focalY: Double?,
+    val alt: LocalizedText,
+) {
+    init {
+        if (listOf(url, cardUrl, wideUrl).any { !it.startsWith("/") && !it.startsWith("https://") }) {
+            throw InvalidCatalogData("image", "needs a path on the shop or an https URL")
+        }
+    }
+}
+
 /** The 14 allergens that EU law requires restaurants to declare. */
 enum class Allergen { GLUTEN, CRUSTACEANS, EGGS, FISH, PEANUTS, SOYBEANS, MILK, NUTS, CELERY, MUSTARD, SESAME, SULPHITES, LUPIN, MOLLUSCS }
 
@@ -96,6 +117,9 @@ data class Restaurant(
     val location: GeoPoint,
     val opensAt: LocalTime,
     val closesAt: LocalTime,
+    val image: Image? = null,
+    /** Left the shop; kept because past orders and deals point at it. */
+    val archived: Boolean = false,
 ) {
     init {
         if (name.isBlank()) throw InvalidCatalogData("name", "must not be blank")
@@ -128,6 +152,10 @@ data class Dish(
     val moods: Set<String>,
     val position: Int,
     val available: Boolean,
+    /** Without one, the shop draws its illustration. */
+    val image: Image? = null,
+    /** Off the menu; kept because past orders point at it. */
+    val archived: Boolean = false,
 ) {
     init {
         if (spiceLevel !in 0..3) throw InvalidCatalogData("spiceLevel", "must be between 0 and 3")

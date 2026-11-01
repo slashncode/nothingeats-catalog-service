@@ -25,12 +25,12 @@ class InMemoryRestaurants : Restaurants {
         limit: Int,
         cuisine: Slug?,
     ) = all.values
-        .filter { cuisine == null || it.cuisine == cuisine }
+        .filter { !it.archived && (cuisine == null || it.cuisine == cuisine) }
         .sortedBy { it.slug.value }
         .filter { after == null || it.slug.value > after.value }
         .take(limit)
 
-    override suspend fun all() = all.values.sortedBy { it.slug.value }
+    override suspend fun all() = all.values.filterNot { it.archived }.sortedBy { it.slug.value }
 }
 
 class InMemoryDishes : Dishes {
@@ -75,9 +75,12 @@ class InMemoryDeals : Deals {
     /** Set to false to act as if another pod were planning. */
     var lockAvailable = true
 
-    override suspend fun insert(deal: Deal) {
+    override suspend fun upsert(deal: Deal) {
+        all.removeIf { it.id == deal.id }
         all += deal
     }
+
+    override suspend fun findById(id: Uuid) = all.firstOrNull { it.id == id }
 
     override suspend fun activeAt(time: Instant) = all.filter { it.isActiveAt(time) }.sortedBy { it.endsAt }
 
@@ -88,6 +91,34 @@ class InMemoryDeals : Deals {
     }
 
     override suspend fun tryLockPlanning() = lockAvailable
+}
+
+class InMemoryPendingDishes : PendingDishes {
+    val waiting = ConcurrentHashMap<Uuid, Pair<Uuid, DishInput>>()
+
+    override suspend fun park(
+        dishId: Uuid,
+        restaurantId: Uuid,
+        input: DishInput,
+    ) {
+        waiting[dishId] = restaurantId to input
+    }
+
+    override suspend fun take(restaurantId: Uuid): List<Pair<Uuid, DishInput>> {
+        val mine = waiting.filterValues { it.first == restaurantId }
+        mine.keys.forEach { waiting.remove(it) }
+        return mine.map { (dishId, entry) -> dishId to entry.second }
+    }
+}
+
+class InMemoryDealPlannerSettings(
+    var settings: DealSettings? = null,
+) : DealPlannerSettings {
+    override suspend fun current() = settings
+
+    override suspend fun save(settings: DealSettings) {
+        this.settings = settings
+    }
 }
 
 class DirectTransactions : Transactions {

@@ -16,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import java.time.Duration
 import java.time.Instant
+import kotlin.uuid.Uuid
 
 class ExposedDealsTest :
     FunSpec({
@@ -34,19 +35,27 @@ class ExposedDealsTest :
                 ManageCatalog(
                     ExposedRestaurants(database),
                     ExposedDishes(database),
+                    ExposedPendingDishes(database),
                     RecordingCatalogEvents(),
                     ExposedTransactions(database),
                 )
-            manage.upsertRestaurant(restaurantInput())
-            val dish = manage.upsertDish("phantom-pizza", dishInput())
+            val restaurant = manage.publishRestaurant(Uuid.random(), restaurantInput())
+            val dish = manage.publishDish(Uuid.random(), restaurant.id, dishInput())!!
             val deals = ExposedDeals(database)
             val noon = Instant.parse("2026-11-02T11:00:00Z")
             val running = Deal.of(dish, 30, noon, Duration.ofMinutes(45))
             val ended = Deal.of(dish, 20, noon.minusSeconds(7200), Duration.ofMinutes(30))
-            deals.insert(running)
-            deals.insert(ended)
+            deals.upsert(running)
+            deals.upsert(ended)
 
             deals.activeAt(noon.plusSeconds(60)) shouldContainExactly listOf(running)
+            deals.findById(running.id) shouldBe running
+
+            // Cancelled: the same row, its window closed.
+            val cancelled = running.cancelledAt(noon.plusSeconds(120))
+            deals.upsert(cancelled)
+            deals.findById(running.id) shouldBe cancelled
+            deals.activeAt(noon.plusSeconds(180)) shouldContainExactly emptyList()
             deals.deleteEndedBefore(noon) shouldBe 1
             deals.activeAt(noon.minusSeconds(5400)) shouldContainExactly emptyList()
         }

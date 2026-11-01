@@ -7,7 +7,6 @@ Catalog service of NothingEats (restaurants, dishes, menus, DE/EN texts). Create
 - `./gradlew build` — compile (warnings are errors), ktlint, tests. Needs Docker for Testcontainers.
 - `./gradlew ktlintFormat` — auto-format
 - `./gradlew :app:run --args=migrate` / `./gradlew :app:run` — needs `DATABASE__URL`, `DATABASE__USER`, `DATABASE__PASSWORD`
-- `./gradlew :app:run --args="cron load-seed"` — imports `adapters/src/main/resources/seed/catalog.json`
 - `./gradlew :app:jibDockerBuild -Djib.from.platforms=linux/arm64` — local image
 
 ## Rules
@@ -19,4 +18,5 @@ Catalog service of NothingEats (restaurants, dishes, menus, DE/EN texts). Create
 - Customer-facing text is always `LocalizedText` with German and English; never add a single-language text field.
 - Money is `Money` in euro cents, never floating point.
 - The event contract is `docs/events.md`; change it together with the payload classes in `adapters/.../messaging`. Events are snapshots in all languages.
-- The seed is test data for the demo; `LoadSeedTaskTest` checks that it stays valid (8 restaurants × 6 dishes).
+- The backoffice owns the content (journal record 040): catalog changes arrive only as `backoffice.*` events (`adapters/.../messaging/BackofficeEvents.kt`), keyed by the backoffice's ids. There is no write API and no seed here any more.
+- Catalog stays the only producer of `catalog.*`. Archived content is never deleted (orders point at it); browsing hides it.

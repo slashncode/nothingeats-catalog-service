@@ -4,19 +4,29 @@ import io.github.slashncode.nothingeats.catalog.domain.Allergen
 import io.github.slashncode.nothingeats.catalog.domain.DietaryTag
 import io.github.slashncode.nothingeats.catalog.domain.Dish
 import io.github.slashncode.nothingeats.catalog.domain.GeoPoint
+import io.github.slashncode.nothingeats.catalog.domain.Image
 import io.github.slashncode.nothingeats.catalog.domain.InvalidCatalogData
 import io.github.slashncode.nothingeats.catalog.domain.LocalizedText
 import io.github.slashncode.nothingeats.catalog.domain.Money
 import io.github.slashncode.nothingeats.catalog.domain.Restaurant
 import io.github.slashncode.nothingeats.catalog.domain.Slug
-import io.github.slashncode.nothingeats.platform.core.error.AppError
-import io.github.slashncode.nothingeats.platform.core.error.ErrorCode
 import java.time.LocalTime
 import kotlin.uuid.Uuid
 
 data class Translated(
     val de: String,
     val en: String,
+)
+
+data class ImageInput(
+    val url: String,
+    val cardUrl: String,
+    val wideUrl: String,
+    val width: Int? = null,
+    val height: Int? = null,
+    val focalX: Double? = null,
+    val focalY: Double? = null,
+    val alt: Translated,
 )
 
 data class RestaurantInput(
@@ -33,6 +43,8 @@ data class RestaurantInput(
     /** `HH:mm` */
     val opensAt: String,
     val closesAt: String,
+    val image: ImageInput? = null,
+    val archived: Boolean = false,
 )
 
 data class DishInput(
@@ -48,45 +60,71 @@ data class DishInput(
     val moods: Set<String> = emptySet(),
     val position: Int = 0,
     val available: Boolean = true,
+    val image: ImageInput? = null,
+    val archived: Boolean = false,
 )
 
 /**
- * Creates or updates restaurants and dishes by slug, keeping their ids stable. An update that
- * changes nothing publishes no event, so re-running the seed import is quiet.
+ * Takes restaurants and dishes as the backoffice published them (record 040), under the backoffice's
+ * ids, and keeps publishing catalog's own events. An update that changes nothing publishes nothing,
+ * so a replayed topic is quiet. Rules the backoffice could not check (a slug taken by another
+ * restaurant) end as `CATALOG_INVALID`, and the consumer parks the event in its dead-letter topic.
  */
 class ManageCatalog(
     private val restaurants: Restaurants,
     private val dishes: Dishes,
+    private val pending: PendingDishes,
     private val events: CatalogEvents,
     private val transactions: Transactions,
 ) {
-    suspend fun upsertRestaurant(input: RestaurantInput): Restaurant =
+    suspend fun publishRestaurant(
+        id: Uuid,
+        input: RestaurantInput,
+    ): Restaurant =
         transactions.run {
-            val existing = restaurants.findBySlug(slugOrInvalid(input.slug, "slug"))
-            val restaurant = input.toRestaurant(existing?.id ?: Uuid.random())
-            if (restaurant != existing) {
+            val restaurant = input.toRestaurant(id)
+            if (restaurants.findBySlug(restaurant.slug)?.takeIf { it.id != id } != null) {
+                throw catalogInvalid("slug", "${restaurant.slug} belongs to another restaurant")
+            }
+            if (restaurant != restaurants.findById(id)) {
                 restaurants.upsert(restaurant)
                 events.restaurantPublished(restaurant)
             }
+            pending.take(id).forEach { (dishId, dish) -> applyDish(dishId, restaurant, dish) }
             restaurant
         }
 
-    suspend fun upsertDish(
-        restaurantSlug: String,
+    /** The dish, or null while it waits for its restaurant. */
+    suspend fun publishDish(
+        id: Uuid,
+        restaurantId: Uuid,
         input: DishInput,
-    ): Dish =
+    ): Dish? =
         transactions.run {
-            val restaurant =
-                restaurants.findBySlug(slugOrInvalid(restaurantSlug, "restaurant"))
-                    ?: throw AppError.NotFound(ErrorCode("RESTAURANT_NOT_FOUND"), "Restaurant $restaurantSlug does not exist")
-            val existing = dishes.findBySlug(restaurant.id, slugOrInvalid(input.slug, "slug"))
-            val dish = input.toDish(existing?.id ?: Uuid.random(), restaurant.id)
-            if (dish != existing) {
-                dishes.upsert(dish)
-                events.dishPublished(dish, restaurant)
+            val restaurant = restaurants.findById(restaurantId)
+            if (restaurant == null) {
+                pending.park(id, restaurantId, input)
+                null
+            } else {
+                applyDish(id, restaurant, input)
             }
-            dish
         }
+
+    private suspend fun applyDish(
+        id: Uuid,
+        restaurant: Restaurant,
+        input: DishInput,
+    ): Dish {
+        val dish = input.toDish(id, restaurant.id)
+        if (dishes.findBySlug(restaurant.id, dish.slug)?.takeIf { it.id != id } != null) {
+            throw catalogInvalid("slug", "${dish.slug} belongs to another dish of ${restaurant.slug}")
+        }
+        if (dish != dishes.findById(id)) {
+            dishes.upsert(dish)
+            events.dishPublished(dish, restaurant)
+        }
+        return dish
+    }
 
     private fun RestaurantInput.toRestaurant(id: Uuid): Restaurant =
         domain {
@@ -103,6 +141,8 @@ class ManageCatalog(
                 location = GeoPoint(latitude, longitude),
                 opensAt = time(opensAt, "opensAt"),
                 closesAt = time(closesAt, "closesAt"),
+                image = image?.toImage(),
+                archived = archived,
             )
         }
 
@@ -126,8 +166,12 @@ class ManageCatalog(
                 moods = moods.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet(),
                 position = position,
                 available = available,
+                image = image?.toImage(),
+                archived = archived,
             )
         }
+
+    private fun ImageInput.toImage(): Image = Image(url, cardUrl, wideUrl, width, height, focalX, focalY, LocalizedText(alt.de, alt.en))
 
     private inline fun <T> domain(build: () -> T): T =
         try {
@@ -146,21 +190,4 @@ class ManageCatalog(
         field: String,
     ): E =
         enumValues<E>().firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) } ?: throw catalogInvalid(field, "unknown value $raw")
-}
-
-data class SeedRestaurant(
-    val restaurant: RestaurantInput,
-    val dishes: List<DishInput>,
-)
-
-/** `cron load-seed`: imports the demo catalog; safe to run again and again. */
-class LoadSeed(
-    private val manage: ManageCatalog,
-) {
-    suspend operator fun invoke(seed: List<SeedRestaurant>): Int =
-        seed.sumOf { entry ->
-            manage.upsertRestaurant(entry.restaurant)
-            entry.dishes.forEach { manage.upsertDish(entry.restaurant.slug, it) }
-            entry.dishes.size
-        }
 }

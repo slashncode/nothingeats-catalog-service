@@ -14,13 +14,14 @@ interface Restaurants {
 
     suspend fun findById(id: Uuid): Restaurant?
 
-    /** Ordered by slug, starting after [after]; optionally one cuisine only. */
+    /** Restaurants in the shop (not archived), ordered by slug, starting after [after]; optionally one cuisine only. */
     suspend fun page(
         after: Slug?,
         limit: Int,
         cuisine: Slug?,
     ): List<Restaurant>
 
+    /** Every restaurant in the shop (not archived). */
     suspend fun all(): List<Restaurant>
 }
 
@@ -38,7 +39,10 @@ interface Dishes {
 }
 
 interface Deals {
-    suspend fun insert(deal: Deal)
+    /** Inserts or replaces by id: planned deals are written once, scheduled ones may change. */
+    suspend fun upsert(deal: Deal)
+
+    suspend fun findById(id: Uuid): Deal?
 
     /** Deals running at [time], soonest end first. */
     suspend fun activeAt(time: Instant): List<Deal>
@@ -51,6 +55,28 @@ interface Deals {
      * Call inside [Transactions.run].
      */
     suspend fun tryLockPlanning(): Boolean
+}
+
+/**
+ * Dishes whose restaurant has not arrived yet: the backoffice's dish and restaurant topics are read
+ * side by side, so a dish can overtake its restaurant. They wait here and are applied with it.
+ */
+interface PendingDishes {
+    suspend fun park(
+        dishId: Uuid,
+        restaurantId: Uuid,
+        input: DishInput,
+    )
+
+    /** Removes and returns the dishes waiting for [restaurantId]. */
+    suspend fun take(restaurantId: Uuid): List<Pair<Uuid, DishInput>>
+}
+
+/** The deal planner's settings as the backoffice published them last; null until it has. */
+interface DealPlannerSettings {
+    suspend fun current(): DealSettings?
+
+    suspend fun save(settings: DealSettings)
 }
 
 /** Published language of the catalog context, stored in the outbox within the caller's transaction. */
