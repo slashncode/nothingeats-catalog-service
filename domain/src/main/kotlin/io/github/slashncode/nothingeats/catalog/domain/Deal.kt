@@ -2,13 +2,17 @@ package io.github.slashncode.nothingeats.catalog.domain
 
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import kotlin.math.roundToLong
 import kotlin.uuid.Uuid
 
+/** Who made a deal: catalog's planner, or an editor in the backoffice (who also cancels it there). */
+enum class DealSource { PLANNER, BACKOFFICE }
+
 /**
- * A flash deal: one dish costs less for a short while. There is no stock and no "only 3 left":
- * a restaurant always has food, so the only urgency is the clock. Planned by catalog or scheduled
- * in the backoffice; a cancelled deal keeps its id and its window closes.
+ * A deal of the day: one dish costs less until midnight in Hamburg. There is no stock and no
+ * "only 3 left": a restaurant always has food, so the only urgency is the clock. Planned by
+ * catalog or scheduled in the backoffice; a cancelled deal keeps its id and its window closes.
  */
 data class Deal(
     val id: Uuid,
@@ -19,6 +23,7 @@ data class Deal(
     val regularPrice: Money,
     val startsAt: Instant,
     val endsAt: Instant,
+    val source: DealSource = DealSource.PLANNER,
 ) {
     init {
         if (percentOff !in MIN_PERCENT..MAX_PERCENT) throw InvalidCatalogData("percentOff", "must be between $MIN_PERCENT and $MAX_PERCENT")
@@ -44,6 +49,26 @@ data class Deal(
             id: Uuid = Uuid.random(),
         ) = Deal(id, dish.id, dish.restaurantId, percentOff, discounted(dish.price, percentOff), dish.price, startsAt, startsAt + duration)
 
+        /** The planner's deal: from [startsAt] until the next midnight in [zone]. */
+        fun forTheDay(
+            dish: Dish,
+            percentOff: Int,
+            startsAt: Instant,
+            zone: ZoneId,
+            id: Uuid = Uuid.random(),
+        ) = of(dish, percentOff, startsAt, Duration.between(startsAt, nextMidnight(startsAt, zone)), id)
+
+        fun nextMidnight(
+            time: Instant,
+            zone: ZoneId,
+        ): Instant =
+            time
+                .atZone(zone)
+                .toLocalDate()
+                .plusDays(1)
+                .atStartOfDay(zone)
+                .toInstant()
+
         /** A deal scheduled in the backoffice, priced from the dish as it is now. */
         fun scheduled(
             id: Uuid,
@@ -53,7 +78,17 @@ data class Deal(
             endsAt: Instant,
         ): Deal {
             if (!endsAt.isAfter(startsAt)) throw InvalidCatalogData("endsAt", "must be after startsAt")
-            return Deal(id, dish.id, dish.restaurantId, percentOff, discounted(dish.price, percentOff), dish.price, startsAt, endsAt)
+            return Deal(
+                id,
+                dish.id,
+                dish.restaurantId,
+                percentOff,
+                discounted(dish.price, percentOff),
+                dish.price,
+                startsAt,
+                endsAt,
+                DealSource.BACKOFFICE,
+            )
         }
 
         /** Rounded to whole ten cents, like a menu would print it. */

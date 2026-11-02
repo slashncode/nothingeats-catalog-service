@@ -2,6 +2,7 @@ package io.github.slashncode.nothingeats.catalog.adapters.persistence
 
 import io.github.slashncode.nothingeats.catalog.application.Deals
 import io.github.slashncode.nothingeats.catalog.domain.Deal
+import io.github.slashncode.nothingeats.catalog.domain.DealSource
 import io.github.slashncode.nothingeats.catalog.domain.Money
 import io.github.slashncode.nothingeats.platform.persistence.PostgresDatabase
 import org.jetbrains.exposed.v1.core.ResultRow
@@ -14,6 +15,7 @@ import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.lessEq
 import org.jetbrains.exposed.v1.javatime.timestamp
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.upsert
 import java.time.Instant
@@ -28,6 +30,7 @@ internal object DealsTable : Table("deals") {
     val regularPriceCents = long("regular_price_cents")
     val startsAt = timestamp("starts_at")
     val endsAt = timestamp("ends_at")
+    val madeBy = text("source")
 
     override val primaryKey = PrimaryKey(id)
 }
@@ -46,6 +49,7 @@ class ExposedDeals(
                 it[regularPriceCents] = deal.regularPrice.cents
                 it[startsAt] = deal.startsAt
                 it[endsAt] = deal.endsAt
+                it[madeBy] = deal.source.name
             }
         }
     }
@@ -68,6 +72,24 @@ class ExposedDeals(
                 .map { it.toDeal() }
         }
 
+    override suspend fun endingAfter(time: Instant): List<Deal> =
+        db.transaction(readOnly = true) {
+            DealsTable
+                .selectAll()
+                .where { DealsTable.endsAt greater time }
+                .orderBy(DealsTable.startsAt to SortOrder.ASC)
+                .map { it.toDeal() }
+        }
+
+    override suspend fun dishesWithDealsAfter(time: Instant): Set<Uuid> =
+        db.transaction(readOnly = true) {
+            DealsTable
+                .select(DealsTable.dishId)
+                .where { DealsTable.endsAt greater time }
+                .map { it[DealsTable.dishId] }
+                .toSet()
+        }
+
     override suspend fun deleteEndedBefore(time: Instant): Int = db.transaction { DealsTable.deleteWhere { DealsTable.endsAt less time } }
 
     // A transaction-scoped advisory lock: released with the transaction, never left behind by a dead pod.
@@ -88,6 +110,7 @@ class ExposedDeals(
             regularPrice = Money(this[DealsTable.regularPriceCents]),
             startsAt = this[DealsTable.startsAt],
             endsAt = this[DealsTable.endsAt],
+            source = DealSource.valueOf(this[DealsTable.madeBy]),
         )
 
     private companion object {

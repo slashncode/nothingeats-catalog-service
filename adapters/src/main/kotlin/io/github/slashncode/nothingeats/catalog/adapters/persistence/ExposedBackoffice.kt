@@ -17,7 +17,6 @@ import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.upsert
 import java.time.Clock
-import java.time.Duration
 import kotlin.uuid.Uuid
 
 internal object PendingDishesTable : Table("pending_dishes") {
@@ -33,7 +32,6 @@ internal object DealPlannerSettingsTable : Table("deal_planner_settings") {
     val id = integer("id")
     val enabled = bool("enabled")
     val concurrent = integer("concurrent")
-    val durationsMinutes = array<Int>("durations_minutes", IntegerColumnType())
     val percentages = array<Int>("percentages", IntegerColumnType())
     val minimumPriceCents = long("minimum_price_cents")
 
@@ -168,7 +166,6 @@ class ExposedDealPlannerSettings(
                 DealSettings(
                     enabled = it[DealPlannerSettingsTable.enabled],
                     concurrent = it[DealPlannerSettingsTable.concurrent],
-                    durations = it[DealPlannerSettingsTable.durationsMinutes].map { minutes -> Duration.ofMinutes(minutes.toLong()) },
                     percentages = it[DealPlannerSettingsTable.percentages],
                     minimumPriceCents = it[DealPlannerSettingsTable.minimumPriceCents],
                 )
@@ -181,7 +178,6 @@ class ExposedDealPlannerSettings(
                 it[id] = 1
                 it[enabled] = settings.enabled
                 it[concurrent] = settings.concurrent
-                it[durationsMinutes] = settings.durations.map { duration -> duration.toMinutes().toInt() }
                 it[percentages] = settings.percentages
                 it[minimumPriceCents] = settings.minimumPriceCents
             }

@@ -15,7 +15,6 @@ import io.github.slashncode.nothingeats.platform.kafka.CloudEvent
 import io.github.slashncode.nothingeats.platform.kafka.EventHandler
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
-import java.time.Duration
 import java.time.Instant
 import kotlin.uuid.Uuid
 
@@ -103,7 +102,8 @@ internal data class BackofficeDeal(
 internal data class BackofficeDealPlanner(
     val enabled: Boolean,
     val concurrent: Int,
-    val durationsMinutes: List<Int>,
+    /** Older snapshots carried durations; deals now run until midnight, so they are ignored. */
+    val durationsMinutes: List<Int> = emptyList(),
     val percentages: List<Int>,
     val minimumPriceCents: Long,
 )
@@ -216,7 +216,6 @@ class BackofficeDealPlannerHandler(
             DealSettings(
                 enabled = s.enabled,
                 concurrent = s.concurrent,
-                durations = s.durationsMinutes.map { Duration.ofMinutes(it.toLong()) },
                 percentages = s.percentages,
                 minimumPriceCents = s.minimumPriceCents,
             ),

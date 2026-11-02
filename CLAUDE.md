@@ -19,4 +19,5 @@ Catalog service of NothingEats (restaurants, dishes, menus, DE/EN texts). Create
 - Money is `Money` in euro cents, never floating point.
 - The event contract is `docs/events.md`; change it together with the payload classes in `adapters/.../messaging`. Events are snapshots in all languages.
 - The backoffice owns the content (journal record 040): catalog changes arrive only as `backoffice.*` events (`adapters/.../messaging/BackofficeEvents.kt`), keyed by the backoffice's ids. There is no write API and no seed here any more.
+- One exception to "no write API": `/api/catalog/v1/admin/deals` (role `admin`) ends the planner's own deals; deals the backoffice scheduled are cancelled in the backoffice, never here.
 - Catalog stays the only producer of `catalog.*`. Archived content is never deleted (orders point at it); browsing hides it.

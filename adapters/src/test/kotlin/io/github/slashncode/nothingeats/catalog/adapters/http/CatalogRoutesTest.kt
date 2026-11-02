@@ -1,5 +1,6 @@
 package io.github.slashncode.nothingeats.catalog.adapters.http
 
+import io.github.slashncode.nothingeats.catalog.application.AdminDeals
 import io.github.slashncode.nothingeats.catalog.application.BrowseCatalog
 import io.github.slashncode.nothingeats.catalog.application.BrowseDeals
 import io.github.slashncode.nothingeats.catalog.application.DirectTransactions
@@ -23,10 +24,12 @@ import io.github.slashncode.nothingeats.platform.http.Problem
 import io.github.slashncode.nothingeats.platform.http.installPlatform
 import io.github.slashncode.nothingeats.platform.testing.TestTokens
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.put
@@ -80,9 +83,13 @@ private fun catalogApi(
     val dishes = InMemoryDishes()
     val manage = ManageCatalog(restaurants, dishes, InMemoryPendingDishes(), RecordingCatalogEvents(), DirectTransactions())
     val routes = CatalogRoutes(BrowseCatalog(restaurants, dishes), BrowseDeals(deals, dishes, restaurants, clock), clock)
+    val admin = CatalogAdminRoutes(AdminDeals(deals, dishes, restaurants, RecordingCatalogEvents(), DirectTransactions(), clock), clock)
     application {
         installPlatform(Readiness(), HealthChecks(emptySet()), tokens.jwtAuth)
-        routing { with(routes) { register() } }
+        routing {
+            with(routes) { register() }
+            with(admin) { register() }
+        }
     }
     block(Content(manage))
 }
@@ -109,6 +116,42 @@ class CatalogRoutesTest :
 
                 val offers = client.get("/api/catalog/v1/deals").body(DealsResponse.serializer())
                 offers.items.map { it.dish.slug to it.restaurant.slug } shouldContainExactly listOf("margherita" to "phantom-pizza")
+            }
+        }
+
+        test("admins see the running and coming deals and end a planner deal; customers are refused") {
+            val deals = InMemoryDeals()
+            catalogApi(deals = deals) { content ->
+                content.restaurant(restaurantInput())
+                val dish = content.dish(dishInput(priceCents = 1290))
+                val running = Deal.forTheDay(dish, 30, noon.instant().minusSeconds(60), berlin)
+                deals.upsert(running)
+                val admin = tokens.accessToken(userId = "boss", roles = setOf("admin"))
+
+                client
+                    .get(
+                        "/api/catalog/v1/admin/deals",
+                    ) { header(HttpHeaders.Authorization, "Bearer ${tokens.accessToken()}") }
+                    .status shouldBe
+                    HttpStatusCode.Forbidden
+                val listed =
+                    client
+                        .get("/api/catalog/v1/admin/deals?lang=de") { header(HttpHeaders.Authorization, "Bearer $admin") }
+                        .body(AdminDealsResponse.serializer())
+                        .items
+                        .single()
+                listed.source shouldBe "PLANNER"
+                listed.running shouldBe true
+                listed.endsAt shouldBe "2026-10-24T22:00:00Z"
+                listed.restaurant.slug shouldBe "phantom-pizza"
+
+                client
+                    .delete(
+                        "/api/catalog/v1/admin/deals/${running.id}",
+                    ) { header(HttpHeaders.Authorization, "Bearer $admin") }
+                    .status shouldBe
+                    HttpStatusCode.OK
+                deals.activeAt(noon.instant()).shouldBeEmpty()
             }
         }
 

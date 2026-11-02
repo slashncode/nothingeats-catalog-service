@@ -130,7 +130,7 @@ class CatalogFlowTest :
                     backofficeEvent(
                         BackofficeTopics.DEAL_PLANNER_PUBLISHED,
                         "deal-planner",
-                        """{"enabled":false,"concurrent":3,"durationsMinutes":[30],"percentages":[20],"minimumPriceCents":500}""",
+                        """{"enabled":false,"concurrent":3,"percentages":[20],"minimumPriceCents":500}""",
                     ),
                 )
                 send(

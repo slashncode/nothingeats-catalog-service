@@ -31,7 +31,7 @@ shop, by itself or with its restaurant.
 
 | `type` | When | `data` |
 |---|---|---|
-| `nothingeats.catalog.deal.published.v1` | A flash deal was planned (it starts at `startsAt`, usually right away) | `dealId`, `dishId`, `restaurantId`, `percentOff`, `priceCents` (the deal price), `regularPriceCents` (the dish's price when the deal was planned), `startsAt`, `endsAt` (ISO-8601 instants) |
+| `nothingeats.catalog.deal.published.v1` | A deal was planned, scheduled, ended or cancelled (it runs from `startsAt` to `endsAt`; the planner's run until midnight in Hamburg) | `dealId`, `dishId`, `restaurantId`, `percentOff`, `priceCents` (the deal price), `regularPriceCents` (the dish's price when the deal was planned), `startsAt`, `endsAt` (ISO-8601 instants) |
 
 Deals are planned by catalog or scheduled by an editor in the backoffice. A planned deal never changes;
 a scheduled one can be rescheduled until it runs, and a cancelled deal is published again with its window

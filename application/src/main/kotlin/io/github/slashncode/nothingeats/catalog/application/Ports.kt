@@ -47,6 +47,12 @@ interface Deals {
     /** Deals running at [time], soonest end first. */
     suspend fun activeAt(time: Instant): List<Deal>
 
+    /** Deals running at [time] or starting later, earliest start first (the backoffice's list). */
+    suspend fun endingAfter(time: Instant): List<Deal>
+
+    /** Dishes with a deal that ran or runs after [time]: a dish gets one deal a day. */
+    suspend fun dishesWithDealsAfter(time: Instant): Set<Uuid>
+
     /** Deals that ended before [time] go; their events stay on the topic, harmlessly in the past. */
     suspend fun deleteEndedBefore(time: Instant): Int
 

@@ -1,6 +1,7 @@
 package io.github.slashncode.nothingeats.catalog.app
 
 import io.github.slashncode.nothingeats.catalog.adapters.deals.DealPlanner
+import io.github.slashncode.nothingeats.catalog.adapters.http.CatalogAdminRoutes
 import io.github.slashncode.nothingeats.catalog.adapters.http.CatalogRoutes
 import io.github.slashncode.nothingeats.catalog.adapters.messaging.BackofficeCatalogHandler
 import io.github.slashncode.nothingeats.catalog.adapters.messaging.BackofficeDealPlannerHandler
@@ -13,6 +14,7 @@ import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedDish
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedPendingDishes
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedRestaurants
 import io.github.slashncode.nothingeats.catalog.adapters.persistence.ExposedTransactions
+import io.github.slashncode.nothingeats.catalog.application.AdminDeals
 import io.github.slashncode.nothingeats.catalog.application.BrowseCatalog
 import io.github.slashncode.nothingeats.catalog.application.BrowseDeals
 import io.github.slashncode.nothingeats.catalog.application.CatalogEvents
@@ -246,6 +248,16 @@ abstract class ServiceComponent(
         events: CatalogEvents,
         transactions: Transactions,
     ): ManageCatalog = ManageCatalog(restaurants, dishes, pending, events, transactions)
+
+    @IntoSet
+    @Provides
+    fun adminRoutes(
+        deals: Deals,
+        dishes: Dishes,
+        restaurants: Restaurants,
+        events: CatalogEvents,
+        transactions: Transactions,
+    ): HttpRoutes = CatalogAdminRoutes(AdminDeals(deals, dishes, restaurants, events, transactions))
 
     @IntoSet
     @Provides

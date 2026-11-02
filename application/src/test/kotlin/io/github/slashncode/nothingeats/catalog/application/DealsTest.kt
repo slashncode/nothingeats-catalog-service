@@ -1,10 +1,12 @@
 package io.github.slashncode.nothingeats.catalog.application
 
+import io.github.slashncode.nothingeats.catalog.domain.DealSource
 import io.github.slashncode.nothingeats.platform.core.error.AppError
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import java.time.Clock
@@ -24,11 +26,13 @@ private class DealWorld(
     val manage = ManageCatalog(restaurants, dishes, InMemoryPendingDishes(), events, DirectTransactions())
     var clock: Clock = Clock.fixed(Instant.parse(at), ZoneOffset.UTC)
     val settings =
-        InMemoryDealPlannerSettings(DealSettings(concurrent = 2, durations = listOf(Duration.ofMinutes(45)), percentages = listOf(30)))
+        InMemoryDealPlannerSettings(DealSettings(concurrent = 2, percentages = listOf(30)))
 
     fun planner() = PlanDeals(restaurants, dishes, deals, events, DirectTransactions(), settings, DealSettings(), clock, Random(7))
 
     fun schedule() = ScheduleDeals(deals, dishes, events, DirectTransactions(), clock)
+
+    fun admin() = AdminDeals(deals, dishes, restaurants, events, DirectTransactions(), clock)
 
     /** The restaurant's id; its dishes are "big" (12.90) and "side" (3.50). */
     suspend fun restaurant(
@@ -48,7 +52,7 @@ private class DealWorld(
 
 class DealsTest :
     FunSpec({
-        test("keeps the configured number of deals running, one per restaurant, never on cheap sides") {
+        test("keeps the configured number of deals of the day running, one per restaurant, never on cheap sides") {
             // 12:00 in Berlin (UTC+1 in November).
             val world = DealWorld("2026-11-02T11:00:00Z")
             listOf("a", "b", "c").forEach { world.restaurant("restaurant-$it") }
@@ -60,28 +64,32 @@ class DealsTest :
             first.started.forEach {
                 it.regularPrice.cents shouldBe 1290
                 it.price.cents shouldBe 900 // 30 % off, rounded to ten cents
-                Duration.between(it.startsAt, it.endsAt) shouldBe Duration.ofMinutes(45)
+                // Until midnight in Hamburg (UTC+1 in November).
+                it.endsAt shouldBe Instant.parse("2026-11-02T23:00:00Z")
             }
             world.events.events.filter { it.startsWith("deal:") } shouldHaveSize 2
             world.planner()().started.shouldBeEmpty()
         }
 
-        test("a deal ends, the next one starts, ended deals are deleted after a day") {
+        test("the day's deals end at midnight, the next day brings new ones, ended deals are deleted after a day") {
             val world = DealWorld("2026-11-02T11:00:00Z")
             listOf("a", "b", "c").forEach { world.restaurant("restaurant-$it") }
             world.planner()()
 
-            world.clock = Clock.offset(world.clock, Duration.ofMinutes(46))
+            world.clock = Clock.offset(world.clock, Duration.ofHours(11))
+            world.planner()().started.shouldBeEmpty()
+
+            world.clock = Clock.offset(world.clock, Duration.ofHours(13))
             world.planner()().started shouldHaveSize 2
 
             world.clock = Clock.offset(world.clock, Duration.ofDays(2))
             world.planner()().deleted shouldBe 4
         }
 
-        test("no deals at closed kitchens, nor ones that would outlive the opening hours") {
-            // 22:30 in Berlin: one restaurant closes at 23:00 (too soon), one is open past midnight.
-            val world = DealWorld("2026-11-02T21:30:00Z")
-            world.restaurant("closes-soon")
+        test("no deals at closed kitchens; a deal may outlive the opening hours, it ends at midnight") {
+            // 23:30 in Berlin: one restaurant closed at 23:00, one is open past midnight.
+            val world = DealWorld("2026-11-02T22:30:00Z")
+            world.restaurant("closed")
             world.restaurant("night-owl", opensAt = "18:00", closesAt = "02:00")
 
             val planned = world.planner()()
@@ -90,6 +98,38 @@ class DealsTest :
             world.restaurants
                 .findById(planned.started.single().restaurantId)!!
                 .slug.value shouldBe "night-owl"
+            planned.started.single().endsAt shouldBe Instant.parse("2026-11-02T23:00:00Z")
+        }
+
+        test("an editor ends a running planner deal; the slot is filled, never with the same dish that day") {
+            val world = DealWorld("2026-11-02T11:00:00Z")
+            listOf("a", "b", "c").forEach { world.restaurant("restaurant-$it") }
+            val first = world.planner()().started.first()
+
+            val ended = world.admin().end(first.id.toString())
+
+            ended.endsAt shouldBe world.clock.instant()
+            world.events.events.last() shouldBe "deal:${first.dishId}"
+            val replacement = world.planner()().started.single()
+            replacement.dishId shouldNotBe first.dishId
+            world.admin().current().map { it.deal.id } shouldNotContain first.id
+        }
+
+        test("deals scheduled in the backoffice are cancelled there, not here; unknown deals are not found") {
+            val world = DealWorld("2026-11-02T11:00:00Z")
+            val a = world.restaurant("restaurant-a")
+            val now = world.clock.instant()
+            val scheduled =
+                world.schedule()(DealSchedule(Uuid.random(), world.big(a).id, 30, now, now + Duration.ofHours(1), cancelled = false))!!
+
+            shouldThrow<AppError.Conflict> { world.admin().end(scheduled.id.toString()) }.code.value shouldBe "DEAL_FROM_BACKOFFICE"
+            shouldThrow<AppError.NotFound> { world.admin().end(Uuid.random().toString()) }
+            shouldThrow<AppError.NotFound> { world.admin().end("not-an-id") }
+            world
+                .admin()
+                .current()
+                .single()
+                .deal.source shouldBe DealSource.BACKOFFICE
         }
 
         test("another pod holding the planning lock means this one plans nothing") {
@@ -107,7 +147,7 @@ class DealsTest :
             world.settings.settings = DealSettings(enabled = false)
             world.planner()().started.shouldBeEmpty()
 
-            world.settings.settings = DealSettings(concurrent = 3, durations = listOf(Duration.ofMinutes(30)), percentages = listOf(20))
+            world.settings.settings = DealSettings(concurrent = 3, percentages = listOf(20))
             val planned = world.planner()().started
             planned shouldHaveSize 3
             planned.forEach { it.percentOff shouldBe 20 }
@@ -160,7 +200,7 @@ class DealsTest :
         test("planner settings are checked before they replace the old ones") {
             val settings = InMemoryDealPlannerSettings()
             shouldThrow<AppError.Invalid> { UpdateDealPlanner(settings)(DealSettings(percentages = listOf(95))) }
-            shouldThrow<AppError.Invalid> { UpdateDealPlanner(settings)(DealSettings(durations = emptyList())) }
+            shouldThrow<AppError.Invalid> { UpdateDealPlanner(settings)(DealSettings(percentages = emptyList())) }
             settings.settings shouldBe null
 
             UpdateDealPlanner(settings)(DealSettings(concurrent = 5))

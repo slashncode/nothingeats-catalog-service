@@ -16,7 +16,6 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
-import java.time.Duration
 import kotlin.uuid.Uuid
 
 class ExposedCatalogTest :
@@ -113,7 +112,6 @@ class ExposedCatalogTest :
                 DealSettings(
                     enabled = false,
                     concurrent = 4,
-                    durations = listOf(Duration.ofMinutes(20)),
                     percentages = listOf(15),
                     minimumPriceCents = 800,
                 ),
@@ -123,7 +121,6 @@ class ExposedCatalogTest :
                 DealSettings(
                     enabled = false,
                     concurrent = 4,
-                    durations = listOf(Duration.ofMinutes(20)),
                     percentages = listOf(15),
                     minimumPriceCents = 800,
                 )

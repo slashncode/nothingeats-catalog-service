@@ -84,6 +84,10 @@ class InMemoryDeals : Deals {
 
     override suspend fun activeAt(time: Instant) = all.filter { it.isActiveAt(time) }.sortedBy { it.endsAt }
 
+    override suspend fun endingAfter(time: Instant) = all.filter { it.endsAt.isAfter(time) }.sortedBy { it.startsAt }
+
+    override suspend fun dishesWithDealsAfter(time: Instant) = all.filter { it.endsAt.isAfter(time) }.map { it.dishId }.toSet()
+
     override suspend fun deleteEndedBefore(time: Instant): Int {
         val ended = all.filter { it.endsAt.isBefore(time) }
         all.removeAll(ended.toSet())

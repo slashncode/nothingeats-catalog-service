@@ -1,6 +1,6 @@
 # nothingeats-catalog-service
 
-Catalog bounded context of [NothingEats](https://github.com/slashncode/nothingeats): restaurants, dishes and menus in German and English, and flash deals. Deals have no stock: a restaurant always has food, so the only urgency is the clock.
+Catalog bounded context of [NothingEats](https://github.com/slashncode/nothingeats): restaurants, dishes and menus in German and English, and deals of the day. Deals have no stock: a restaurant always has food, so the only urgency is the clock.
 
 The content is edited in the [backoffice](https://github.com/slashncode/nothingeats-backoffice) (Payload), which publishes it through its own outbox. Catalog consumes `backoffice.restaurant.v1`, `backoffice.dish.v1`, `backoffice.deal.v1` and `backoffice.deal-planner.v1`, checks the content against its domain rules, and stays the only producer of the `catalog.*` events everything downstream reads.
 
@@ -11,13 +11,15 @@ The content is edited in the [backoffice](https://github.com/slashncode/nothinge
 | `GET` | `/restaurants?cursor=&limit=&cuisine=` | – | Restaurants ordered by slug, cursor-paginated (`limit` 1–50, default 20), optionally one cuisine |
 | `GET` | `/restaurants/{slug}` | – | The restaurant with its menu, dishes grouped by section |
 | `GET` | `/dishes/{id}` | – | One dish with its restaurant |
-| `GET` | `/deals` | – | Running flash deals with dish and restaurant, soonest end first |
+| `GET` | `/deals` | – | Running deals with dish and restaurant, soonest end first |
+| `GET` | `/admin/deals` | role `admin` | Deals running now or later with `source` (`PLANNER` or `BACKOFFICE`), for the backoffice |
+| `DELETE` | `/admin/deals/{id}` | role `admin` | Ends a running planner deal now; `409 DEAL_FROM_BACKOFFICE` for one the backoffice scheduled (cancel it there) |
 
 The API only reads; changes arrive as backoffice events.
 
 - **Language**: `?lang=de|en` wins over `Accept-Language`; anything else is German. Responses carry `Content-Language` and `Vary: Accept-Language`.
 - **Open now**: computed per request in Berlin time; opening hours may run past midnight (`18:00`–`02:00`).
-- **Flash deals**: editors schedule deals in the backoffice; a loop on every pod (one at a time, via a Postgres advisory lock) fills up to the planner's number of deals (default three, editable in the backoffice) at other restaurants, only where the kitchen stays open for the whole deal. A cancelled deal keeps its id and its window closes. Dishes in menus and `/dishes/{id}` carry `deal` (`priceCents`, `percentOff`, `endsAt`) while one runs.
+- **Deals of the day**: editors schedule deals for whole days in the backoffice; a loop on every pod (one at a time, via a Postgres advisory lock) fills up to the planner's number of deals (default three, editable in the backoffice) at other restaurants whose kitchen is open now. Every planner deal runs until midnight in Hamburg, and a dish gets one deal a day, so a deal an editor ended does not come straight back. A cancelled deal keeps its id and its window closes. Dishes in menus and `/dishes/{id}` carry `deal` (`priceCents`, `percentOff`, `endsAt`) while one runs.
 - **Images**: restaurants and dishes carry `image` (`url`, `cardUrl`, `wideUrl`, `alt` in the requested language, size, focal point) when the backoffice has one; dishes without one get the shop's illustration.
 - **Archived** restaurants and dishes are gone for customers (pages, menus, dishes, deals) but kept, because past orders point at them.
 - **Money** is always in euro cents. Allergens are the 14 EU declarable allergens, dietary tags are `vegan`, `vegetarian`, `gluten_free`, `lactose_free`, `halal`.
