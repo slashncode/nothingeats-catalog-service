@@ -36,7 +36,6 @@ import io.github.slashncode.nothingeats.platform.core.lifecycle.LifecycleManager
 import io.github.slashncode.nothingeats.platform.core.lifecycle.Readiness
 import io.github.slashncode.nothingeats.platform.core.run.CronTask
 import io.github.slashncode.nothingeats.platform.core.run.ServiceRunner
-import io.github.slashncode.nothingeats.platform.http.ExceptionReporter
 import io.github.slashncode.nothingeats.platform.http.HttpExtension
 import io.github.slashncode.nothingeats.platform.http.HttpRoutes
 import io.github.slashncode.nothingeats.platform.http.HttpServer
@@ -55,7 +54,6 @@ import io.github.slashncode.nothingeats.platform.persistence.FlywayMigrations
 import io.github.slashncode.nothingeats.platform.persistence.MigrationSet
 import io.github.slashncode.nothingeats.platform.persistence.PostgresDatabase
 import io.github.slashncode.nothingeats.platform.posthog.PostHogAnalytics
-import io.github.slashncode.nothingeats.platform.posthog.PostHogExceptionReporter
 import io.github.slashncode.nothingeats.platform.posthog.PostHogHttpExtension
 import me.tatarka.inject.annotations.Component
 import me.tatarka.inject.annotations.IntoSet
@@ -105,8 +103,7 @@ abstract class ServiceComponent(
         checks: Set<HealthCheck>,
         routes: Set<HttpRoutes>,
         extensions: Set<HttpExtension>,
-        exceptionReporter: ExceptionReporter,
-    ): HttpServer = HttpServer(config.http, readiness, HealthChecks(checks), routes, JwtAuth(config.jwt), extensions, exceptionReporter)
+    ): HttpServer = HttpServer(config.http, readiness, HealthChecks(checks), routes, JwtAuth(config.jwt), extensions)
 
     @ServiceScope
     @Provides
@@ -141,16 +138,13 @@ abstract class ServiceComponent(
     @Provides
     fun analytics(postHog: PostHogAnalytics): ProductAnalytics = postHog
 
-    @Provides
-    fun exceptionReporter(analytics: ProductAnalytics): ExceptionReporter = PostHogExceptionReporter(analytics)
-
     @IntoSet
     @Provides
     fun postHogLifecycle(postHog: PostHogAnalytics): LifecycleComponent = postHog
 
     @IntoSet
     @Provides
-    fun postHogHttp(): HttpExtension = PostHogHttpExtension()
+    fun postHogHttp(postHog: PostHogAnalytics): HttpExtension = PostHogHttpExtension(postHog)
 
     // Messaging
 
